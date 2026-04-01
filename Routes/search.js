@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 
-const SHOPIFY_URL = "https://ttbp-lam-test.myshopify.com/api/2023-10/graphql.json";
+const SHOPIFY_URL = `${process.env.SHOPIFY_STORE_URL}/api/graphql.json`;
 
 router.get("/", async (req, res) => {
   const searchQuery = req.query.q || "";
@@ -15,74 +15,55 @@ router.get("/", async (req, res) => {
       },
       body: JSON.stringify({
         query: `
-        {
-          products(first: 10, query: "${searchQuery}") {
-            edges {
-              node {
-                id
-                title
-                images(first: 1) {
-                  edges {
-                    node {
-                      url
-                    }
-                  }
-                }
-                variants(first: 1) {
-                  edges {
-                    node {
-                      price {
-                        amount
-                      }
-                    }
-                  }
-                }
+{
+  products(
+    first: 10,
+    query: "title:*${searchQuery}* OR tag:*${searchQuery}* OR body:*${searchQuery}*",
+    sortKey: CREATED_AT,
+    reverse: true
+  ) {
+    edges {
+      node {
+        id
+        title
+        handle
+        createdAt
+        images(first: 1) {
+          edges {
+            node {
+              url
+            }
+          }
+        }
+        variants(first: 1) {
+          edges {
+            node {
+              price {
+                amount
               }
             }
           }
         }
-        `,
+      }
+    }
+  }
+}
+`,
       }),
     });
 
     const data = await response.json();
 
-    if (data.errors) {
-      return res.status(400).json(data.errors);
-    }
-
     const products = data.data.products.edges.map((item) => ({
-  id: item.node.id,
-  title: item.node.title,
-  handle: item.node.handle,
-  image: item.node.images.edges[0]?.node.url,
-  price: item.node.variants.edges[0]?.node.price.amount,
-  createdAt: item.node.createdAt,
-  vendor: item.node.vendor,
-  tags: item.node.tags,
-}));
+      id: item.node.id,
+      title: item.node.title,
+      image: item.node.images.edges?.[0]?.node?.url || "",
+      price: item.node.variants.edges?.[0]?.node?.price?.amount || "0",
+    }));
 
-const queryLower = searchQuery.toLowerCase();
-
-const scoredProducts = products.map((item) => {
-  let score = 0;
-
-  if (item.title?.toLowerCase().includes(queryLower)) score += 5;
-  if (item.tags?.join(" ").toLowerCase().includes(queryLower)) score += 3;
-  if (item.vendor?.toLowerCase().includes(queryLower)) score += 2;
-
-  return { ...item, score };
-});
-const sortedProducts = scoredProducts.sort((a, b) => {
-  if (b.score !== a.score) {
-    return b.score - a.score; // 🔥 priority first
-  }
-
-  return new Date(b.createdAt) - new Date(a.createdAt); // 🔥 latest second
-});
-    res.json(sortedProducts);
+    res.json(products);
   } catch (error) {
-    console.error("SEARCH ERROR:", error);
+    console.error(error);
     res.status(500).json({ error: "Search failed" });
   }
 });
