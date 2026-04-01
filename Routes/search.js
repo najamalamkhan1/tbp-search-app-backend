@@ -58,15 +58,29 @@ router.get("/", async (req, res) => {
   image: item.node.images.edges[0]?.node.url,
   price: item.node.variants.edges[0]?.node.price.amount,
   createdAt: item.node.createdAt,
+  vendor: item.node.vendor,
+  tags: item.node.tags,
 }));
 
-// 🔥 SORT HERE
-const sortedProducts = products.sort((a, b) => {
-  return new Date(b.createdAt) - new Date(a.createdAt);
-});
+const queryLower = searchQuery.toLowerCase();
 
-// ✅ SEND SORTED DATA
-res.json(sortedProducts);
+const scoredProducts = products.map((item) => {
+  let score = 0;
+
+  if (item.title?.toLowerCase().includes(queryLower)) score += 5;
+  if (item.tags?.join(" ").toLowerCase().includes(queryLower)) score += 3;
+  if (item.vendor?.toLowerCase().includes(queryLower)) score += 2;
+
+  return { ...item, score };
+});
+const sortedProducts = scoredProducts.sort((a, b) => {
+  if (b.score !== a.score) {
+    return b.score - a.score; // 🔥 priority first
+  }
+
+  return new Date(b.createdAt) - new Date(a.createdAt); // 🔥 latest second
+});
+    res.json(sortedProducts);
   } catch (error) {
     console.error("SEARCH ERROR:", error);
     res.status(500).json({ error: "Search failed" });
