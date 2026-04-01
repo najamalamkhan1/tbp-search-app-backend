@@ -52,13 +52,21 @@ router.get("/", async (req, res) => {
     }
 
     const products = data.data.products.edges.map((item) => ({
-      id: item.node.id,
-      title: item.node.title,
-      image: item.node.images.edges?.[0]?.node?.url || "",
-      price: item.node.variants.edges?.[0]?.node?.price?.amount || "0",
-    }));
+  id: item.node.id,
+  title: item.node.title,
+  handle: item.node.handle,
+  image: item.node.images.edges[0]?.node.url,
+  price: item.node.variants.edges[0]?.node.price.amount,
+  createdAt: item.node.createdAt,
+}));
 
-    res.json(products);
+// 🔥 SORT HERE
+const sortedProducts = products.sort((a, b) => {
+  return new Date(b.createdAt) - new Date(a.createdAt);
+});
+
+// ✅ SEND SORTED DATA
+res.json(sortedProducts);
   } catch (error) {
     console.error("SEARCH ERROR:", error);
     res.status(500).json({ error: "Search failed" });
