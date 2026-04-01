@@ -18,7 +18,7 @@ router.get("/", async (req, res) => {
 {
   products(
     first: 10,
-    query: "title:*${searchQuery}* OR tag:*${searchQuery}* OR body:*${searchQuery}*",
+    query: "title:*${searchQuery}* OR tag:*${searchQuery}* OR vendor:*${searchQuery} OR body:*${searchQuery}*",
     sortKey: CREATED_AT,
     reverse: true
   ) {
