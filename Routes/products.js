@@ -15,33 +15,40 @@ router.get("/", async (req, res) => {
       },
       body: JSON.stringify({
         query: `
-        {
-          products(first: 10, "title:*${searchQuery}* OR tag:*${searchQuery}* OR varient:*${searchQuery}* OR description:*${searchQuery}* OR price:*${searchQuery}*", ) {
-            edges {
-              node {
-                id
-                title
-                images(first: 1) {
-                  edges {
-                    node {
-                      url
-                    }
-                  }
-                }
-                variants(first: 1) {
-                  edges {
-                    node {
-                      price {
-                        amount
-                      }
-                    }
-                  }
-                }
+{
+  products(
+    first: 10,
+    query: "title:*${searchQuery}* OR tag:*${searchQuery}* OR body:*${searchQuery}*",
+    sortKey: CREATED_AT,
+    reverse: true
+  ) {
+    edges {
+      node {
+        id
+        title
+        handle
+        createdAt
+        images(first: 1) {
+          edges {
+            node {
+              url
+            }
+          }
+        }
+        variants(first: 1) {
+          edges {
+            node {
+              price {
+                amount
               }
             }
           }
         }
-        `,
+      }
+    }
+  }
+}
+`,
       }),
     });
 
