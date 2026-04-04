@@ -68,6 +68,13 @@ router.put("/:id", async (req, res) => {
   try {
     const { storeUrl, token } = req.body;
 
+    // 🔥 VALIDATION
+    if (!storeUrl?.trim() || !token?.trim()) {
+      return res.status(400).json({
+        error: "Store URL and Token are required",
+      });
+    }
+
     const updated = await Store.findByIdAndUpdate(
       req.params.id,
       { storeUrl, token },
