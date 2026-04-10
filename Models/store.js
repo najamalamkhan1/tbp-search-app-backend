@@ -1,15 +1,21 @@
 const mongoose = require("mongoose");
 
 const storeSchema = new mongoose.Schema({
-  storeName: String,
-  domain: String, // example: abc-store.myshopify.com
-  accessToken: String,
-  required:true,
-  new:true,
+  storeUrl: {
+    type: String,
+    required: true,
+  },
+  token: {
+    type: String,
+    required: true,
+  },
+  shopName: {
+    type: String,
+  },
   createdAt: {
     type: Date,
-    default: Date.now
-  }
+    default: Date.now,
+  },
 });
 
 module.exports = mongoose.model("Store", storeSchema);
