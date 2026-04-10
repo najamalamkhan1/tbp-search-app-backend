@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const Store = require('../Models/store')
 
-// const SHOPIFY_URL = `${process.env.SHOPIFY_STORE_URL}/api/graphql.json`;
+const SHOPIFY_URL = `${process.env.SHOPIFY_STORE_URL}/api/graphql.json`;
 
 // POST /api/stores/add
 
@@ -155,11 +155,11 @@ router.get("/search", async (req, res) => {
     const promises = stores.map(async (store) => {
       try {
         const response = await fetch(
-          `https://${store.storeUrl}/admin/api/2024-01/graphql.json`,
+          `https://${store.domain}/admin/api/2024-01/graphql.json`,
           {
             method: "POST",
             headers: {
-              "X-Shopify-Access-Token": store.token,
+              "X-Shopify-Access-Token": store.accessToken,
               "Content-Type": "application/json",
             },
             body: JSON.stringify({
@@ -204,62 +204,58 @@ router.get("/search", async (req, res) => {
   }
 });
 
-// router.get("/trending", async (req, res) => {
-//   try {
-//     const response = await fetch(SHOPIFY_URL, {
-//       method: "POST",
-//       headers: {
-//         "Content-Type": "application/json",
-//         "X-Shopify-Storefront-Access-Token": process.env.SHOPIFY_TOKEN,
-//       },
-//       body: JSON.stringify({
-//         query: `
-//         {
-//           products(first: 10, sortKey: CREATED_AT, reverse: true) {
-//             edges {
-//               node {
-//                 id
-//                 title
-//                 handle
-//                 createdAt
-//                 images(first: 1) {
-//                   edges {
-//                     node {
-//                       url
-//                     }
-//                   }
-//                 }
-//                 variants(first: 1) {
-//                   edges {
-//                     node {
-//                       price {
-//                         amount
-//                       }
-//                     }
-//                   }
-//                 }
-//               }
-//             }
-//           }
-//         }
-//         `,
-//       }),
-//     });
+router.get("/trending", async (req, res) => {
+  try {
+    const stores = await Store.find();
 
-//     const data = await response.json();
+    const promises = stores.map(async (store) => {
+      try {
+        const response = await fetch(
+          `https://${store.domain}/admin/api/2024-01/graphql.json`,
+          {
+            method: "POST",
+            headers: {
+              "X-Shopify-Access-Token": store.accessToken,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              query: `
+              {
+                products(first: 5, sortKey: CREATED_AT, reverse: true) {
+                  edges {
+                    node {
+                      id
+                      title
+                      handle
+                    }
+                  }
+                }
+              }
+              `,
+            }),
+          }
+        );
 
-//     const products = data.data.products.edges.map((item) => ({
-//       id: item.node.id,
-//       title: item.node.title,
-//       handle: item.node.handle,
-//       image: item.node.images.edges[0]?.node.url,
-//       price: item.node.variants.edges[0]?.node.price.amount,
-//     }));
+        const data = await response.json();
 
-//     res.json(products);
-//   } catch (err) {
-//     res.status(500).json({ error: err.message });
-//   }
-// });
+        return data?.data?.products?.edges?.map((item) => ({
+          id: item.node.id,
+          title: item.node.title,
+          handle: item.node.handle,
+          store: store.domain,
+        })) || [];
+
+      } catch (err) {
+        return [];
+      }
+    });
+
+    const results = await Promise.all(promises);
+    res.json(results.flat());
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 module.exports = router;
