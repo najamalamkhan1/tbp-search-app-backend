@@ -141,16 +141,15 @@ router.post("/api/stores/add", async (req, res) => {
 
 router.get("/search", async (req, res) => {
   try {
-
     const { q } = req.query;
 
-    if (!q) {
-      return res.status(400).json({ error: "Missing search query" });
+    // ❌ agar query empty hai
+    if (!q || !q.trim()) {
+      return res.json({ products: [] }); // 🔥 important fix
     }
 
     const stores = await Store.find();
 
-    // 🚀 Parallel requests
     const promises = stores.map(async (store) => {
       try {
         const response = await fetch(
@@ -181,23 +180,19 @@ router.get("/search", async (req, res) => {
 
         const data = await response.json();
 
-        return data.data.products.edges.map((item) => ({
+        return data?.data?.products?.edges?.map((item) => ({
           id: item.node.id,
           title: item.node.title,
           handle: item.node.handle,
-          store: store.storeUrl, // 🔥 kis store se aya
-        }));
+          store: store.storeUrl,
+        })) || [];
 
       } catch (err) {
-        console.log("Error in store:", store.storeUrl);
-        return []; // fail safe
+        return [];
       }
     });
 
-    // ✅ Wait for all
     const results = await Promise.all(promises);
-
-    // 🧠 Flatten array
     const finalResults = results.flat();
 
     res.json({ products: finalResults });
