@@ -7,7 +7,7 @@ const mongoose = require('mongoose')
 // ========================================
 // ✅ ADD STORE
 // ========================================
-// router.post("/add", async (req, res) => {
+// router.post("/store/add", async (req, res) => {
 //   try {
 //     const { storeUrl, token } = req.body || {};
 
@@ -36,7 +36,7 @@ const mongoose = require('mongoose')
 // });
 
 // new api for store add
-router.post("/add", async (req, res) => {
+router.post("/store/add", async (req, res) => {
   try {
     let { domain, accessToken } = req.body;
 
@@ -63,7 +63,7 @@ router.post("/add", async (req, res) => {
 // ========================================
 // ✅ GET ALL STORES
 // ========================================
-router.get("/", async (req, res) => {
+router.get("/store/", async (req, res) => {
   try {
     const stores = await Store.find().sort({ createdAt: -1 });
     res.json(stores);
@@ -76,7 +76,7 @@ router.get("/", async (req, res) => {
 // ========================================
 // ✅ DELETE STORE
 // ========================================
-router.delete("/:id", async (req, res) => {
+router.delete("/store/:id", async (req, res) => {
   try {
     const { id } = req.params;
     console.log("REQ PARAM ID:", req.params.id);
@@ -104,7 +104,7 @@ router.delete("/:id", async (req, res) => {
 // ========================================
 // ✅ UPDATE STORE (BONUS 🔥)
 // ========================================
-router.put("/:id", async (req, res) => {
+router.put("/store/:id", async (req, res) => {
   try {
     let { domain, accessToken } = req.body;
 

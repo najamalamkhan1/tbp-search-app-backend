@@ -26,7 +26,7 @@ db.once('connected',()=>{
 // routes
 
 app.use("/api", searchRoute);
-app.use("/api/store", storesRoute);
+app.use("/api", storesRoute);
 // app.use("/api/products", productsRoute);
 
 
