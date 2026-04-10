@@ -149,6 +149,8 @@ router.get("/search", async (req, res) => {
     }
 
     const stores = await Store.find();
+    // debug
+    console.log("STORES FROM DB:", stores);
 
     const promises = stores.map(async (store) => {
       try {
