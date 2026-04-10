@@ -11,14 +11,18 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-mongoose.connect(process.env.MONGO_URL)
-  .then(async () => {
-    console.log("MongoDB Connected ✅");
-
-    const stores = await Store.find();
-    console.log("DB STORES:", stores);
-  })
-  .catch(err => console.log(err));
+// MongoDB Connection
+mongoose.connect(
+    process.env.MONGO_DB_URI
+)
+// database connect
+const db = mongoose.connection;
+db.on('error',(error)=>{
+    console.log("Error Occured",error);
+});
+db.once('connected',()=>{
+    console.log('MongoDB connected');
+})
 // routes
 
 app.use("/api", searchRoute);
