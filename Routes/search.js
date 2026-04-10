@@ -139,9 +139,9 @@ router.post("/api/stores/add", async (req, res) => {
 //   res.json({ products: results });
 // });
 
-router.get("/api/search", async (req, res) => {
+router.get("/search", async (req, res) => {
   try {
-    
+
     const { q } = req.query;
 
     if (!q) {
