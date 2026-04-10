@@ -77,8 +77,14 @@ router.get("/", async (req, res) => {
 // ========================================
 router.delete("/:id", async (req, res) => {
   try {
-    await Store.findByIdAndDelete(req.params.id);
+    const deleted = await Store.findByIdAndDelete(req.params.id);
+
+    if (!deleted) {
+      return res.status(404).json({ error: "Store not found" });
+    }
+
     res.json({ message: "Store deleted successfully" });
+
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -90,26 +96,34 @@ router.delete("/:id", async (req, res) => {
 // ========================================
 router.put("/:id", async (req, res) => {
   try {
-    const { storeUrl, token } = req.body;
+    let { domain, accessToken } = req.body;
 
-    // 🔥 VALIDATION
-    if (!storeUrl?.trim() || !token?.trim()) {
+    // ✅ validation
+    if (!domain?.trim() || !accessToken?.trim()) {
       return res.status(400).json({
-        error: "Store URL and Token are required",
+        error: "Domain and Access Token are required",
       });
     }
 
+    // ✅ clean domain
+    domain = domain.replace("https://", "");
+
     const updated = await Store.findByIdAndUpdate(
       req.params.id,
-      { storeUrl, token },
+      { domain, accessToken },
       { new: true }
     );
 
+    if (!updated) {
+      return res.status(404).json({ error: "Store not found" });
+    }
+
     res.json(updated);
+
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-}); 
+});
 
 
 module.exports = router;
