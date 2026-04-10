@@ -143,13 +143,11 @@ router.get("/search", async (req, res) => {
   try {
     const { q } = req.query;
 
-    // ❌ agar query empty hai
     if (!q || !q.trim()) {
-      return res.json({ products: [] }); // 🔥 important fix
+      return res.json({ products: [] });
     }
 
     const stores = await Store.find();
-    // debug
     console.log("STORES FROM DB:", stores);
 
     const promises = stores.map(async (store) => {
@@ -164,17 +162,17 @@ router.get("/search", async (req, res) => {
             },
             body: JSON.stringify({
               query: `
-                {
-                  products(first: 5, query: "title:${q}") {
-                    edges {
-                      node {
-                        id
-                        title
-                        handle
-                      }
+              {
+                products(first: 5, query: "${q}") {
+                  edges {
+                    node {
+                      id
+                      title
+                      handle
                     }
                   }
                 }
+              }
               `,
             }),
           }
@@ -182,22 +180,24 @@ router.get("/search", async (req, res) => {
 
         const data = await response.json();
 
+        console.log("STORE:", store.domain);
+        console.log("SHOPIFY RESPONSE:", JSON.stringify(data, null, 2));
+
         return data?.data?.products?.edges?.map((item) => ({
           id: item.node.id,
           title: item.node.title,
           handle: item.node.handle,
-          store: store.storeUrl,
+          store: store.domain,
         })) || [];
 
       } catch (err) {
+        console.log("ERROR:", store.domain);
         return [];
       }
     });
 
     const results = await Promise.all(promises);
-    const finalResults = results.flat();
-
-    res.json({ products: finalResults });
+    res.json({ products: results.flat() });
 
   } catch (err) {
     res.status(500).json({ error: err.message });
