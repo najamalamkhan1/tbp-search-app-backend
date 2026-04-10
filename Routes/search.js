@@ -207,7 +207,7 @@ router.get("/search", async (req, res) => {
 router.get("/trending", async (req, res) => {
   try {
     const stores = await Store.find();
-
+  
     const promises = stores.map(async (store) => {
       try {
         const response = await fetch(
