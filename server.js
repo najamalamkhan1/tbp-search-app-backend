@@ -1,6 +1,5 @@
 const express = require ("express");
 const cors = require ("cors");
-const dotenv = require ("dotenv");
 const productsRoute = require ("./Routes/products");
 const searchRoute = require("./Routes/search");
 const storesRoute = require('./Routes/storeRoute')
@@ -19,7 +18,7 @@ mongoose.connect(
 // database connect
 const db = mongoose.connection;
 db.on('error',(error)=>{
-    console.log(error);
+    console.log("Error Occured",error);
 });
 db.once('connected',()=>{
     console.log('MongoDB connected');
