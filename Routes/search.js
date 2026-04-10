@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const Store = require('../Models/store')
 
-const SHOPIFY_URL = `${process.env.SHOPIFY_STORE_URL}/api/graphql.json`;
+// const SHOPIFY_URL = `${process.env.SHOPIFY_STORE_URL}/api/graphql.json`;
 
 // POST /api/stores/add
 
