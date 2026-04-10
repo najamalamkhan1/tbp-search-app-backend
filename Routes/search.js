@@ -161,20 +161,20 @@ router.get("/search", async (req, res) => {
               "Content-Type": "application/json",
             },
             body: JSON.stringify({
-              query: `
-              {
-                products(first: 5, query: "${q}") {
-                  edges {
-                    node {
-                      id
-                      title
-                      handle
-                    }
-                  }
-                }
-              }
-              `,
-            }),
+  query: `
+  {
+    products(first: 10, query: "title:*${q}*") {
+      edges {
+        node {
+          id
+          title
+          handle
+        }
+      }
+    }
+  }
+  `
+}),
           }
         );
 
