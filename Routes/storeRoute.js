@@ -77,7 +77,15 @@ router.get("/", async (req, res) => {
 // ========================================
 router.delete("/:id", async (req, res) => {
   try {
-    const deleted = await Store.findByIdAndDelete(req.params.id);
+    const { id } = req.params;
+    console.log("REQ PARAM ID:", req.params.id);
+
+    // ✅ check valid Mongo ID
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "Invalid ID format" });
+    }
+
+    const deleted = await Store.findByIdAndDelete(id);
 
     if (!deleted) {
       return res.status(404).json({ error: "Store not found" });
@@ -86,6 +94,7 @@ router.delete("/:id", async (req, res) => {
     res.json({ message: "Store deleted successfully" });
 
   } catch (err) {
+    console.error("DELETE ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 });
