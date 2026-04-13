@@ -80,4 +80,12 @@ router.get("/analytics/top-products", async (req, res) => {
   res.json(data);
 });
 
+router.get("/analytics/recent-searches", async (req, res) => {
+  const data = await Analytics.find({ type: "search" })
+    .sort({ createdAt: -1 })
+    .limit(5);
+
+  res.json(data);
+});
+
 module.exports = router;
