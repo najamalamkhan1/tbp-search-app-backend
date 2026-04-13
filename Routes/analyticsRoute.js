@@ -74,7 +74,7 @@ router.get("/analytics/top-products", async (req, res) => {
     { $match: { type: "click" } },
     { $group: { _id: "$productId", count: { $sum: 1 } } },
     { $sort: { count: -1 } },
-    { $limit: 5 },
+    { $limit: 10 },
   ]);
 
   res.json(data);
@@ -90,23 +90,33 @@ router.get("/analytics/recent-searches", async (req, res) => {
 
 router.get("/analytics/search-trends", async (req, res) => {
   try {
-    const data = await Analytics.aggregate([
-      { $match: { type: "search" } },
+    const days = parseInt(req.query.days) || 7;
 
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    const data = await Analytics.aggregate([
+      {
+        $match: {
+          type: "search",
+          createdAt: { $gte: startDate },
+        },
+      },
       {
         $group: {
           _id: {
-            $dateToString: { format: "%Y-%m-%d", date: "$createdAt" },
+            $dateToString: {
+              format: "%Y-%m-%d",
+              date: "$createdAt",
+            },
           },
           count: { $sum: 1 },
         },
       },
-
       { $sort: { _id: 1 } },
     ]);
 
     res.json(data);
-
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
