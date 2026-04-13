@@ -21,15 +21,38 @@ router.post("/analytics", async (req, res) => {
 
 router.get("/analytics/stats", async (req, res) => {
   try {
-    const totalSearches = await Analytics.countDocuments({ type: "search" });
-    const totalClicks = await Analytics.countDocuments({ type: "click" });
-    const noResults = await Analytics.countDocuments({ type: "no_result" });
+    const now = new Date();
+
+    const last7Days = new Date();
+    last7Days.setDate(now.getDate() - 7);
+
+    const prev7Days = new Date();
+    prev7Days.setDate(now.getDate() - 14);
+
+    // 🔥 CURRENT DATA
+    const currentSearches = await Analytics.countDocuments({
+      type: "search",
+      createdAt: { $gte: last7Days },
+    });
+
+    const prevSearches = await Analytics.countDocuments({
+      type: "search",
+      createdAt: { $gte: prev7Days, $lt: last7Days },
+    });
+
+    // 🔥 FUNCTION
+    const calcGrowth = (current, prev) => {
+      if (prev === 0) return 100;
+      return (((current - prev) / prev) * 100).toFixed(1);
+    };
 
     res.json({
-      totalSearches,
-      totalClicks,
-      noResults,
+      totalSearches: currentSearches,
+      searchesGrowth: calcGrowth(currentSearches, prevSearches),
+
+      // same logic clicks ke liye bhi lagao
     });
+
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
