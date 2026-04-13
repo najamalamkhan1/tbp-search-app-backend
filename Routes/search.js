@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const Store = require('../Models/store')
-const Analytics = require("../Models/analytics");
+const Analytics = require("../Models/analyticsModel");
 
 const SHOPIFY_URL = `${process.env.SHOPIFY_STORE_URL}/api/graphql.json`;
 
