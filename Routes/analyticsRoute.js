@@ -1,4 +1,4 @@
-const Analytics = require("../Models/analytics");
+const Analytics = require("../Models/analyticsModel");
 const router = require("./search");
 
 router.post("/analytics", async (req, res) => {
