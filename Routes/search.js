@@ -162,18 +162,19 @@ router.get("/search", async (req, res) => {
             },
             body: JSON.stringify({
               query: `
-  {
-    products(first: 10, query: "${q}*") {
-      edges {
-        node {
-          id
-          title
-          handle
-        }
+{
+  products(first: 10, sortKey: CREATED_AT, reverse: true, query: "title:*${q}*") {
+    edges {
+      node {
+        id
+        title
+        handle
+        createdAt
       }
     }
   }
-  `
+}
+`
             }),
           }
         );
@@ -187,6 +188,7 @@ router.get("/search", async (req, res) => {
           id: item.node.id,
           title: item.node.title,
           handle: item.node.handle,
+          createdAt: item.node.createdAt,
           store: store.domain,
         })) || [];
 
@@ -197,7 +199,12 @@ router.get("/search", async (req, res) => {
     });
 
     const results = await Promise.all(promises);
-    res.json({ products: results.flat() });
+
+    const sorted = results
+      .flat()
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    res.json({ products: sorted });
 
   } catch (err) {
     res.status(500).json({ error: err.message });
