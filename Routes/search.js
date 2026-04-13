@@ -170,6 +170,20 @@ router.get("/search", async (req, res) => {
         title
         handle
         createdAt
+        images(first: 1) {
+          edges {
+            node {
+              url
+            }
+          }
+        }
+        variants(first: 1) {
+          edges {
+            node {
+              price
+            }
+          }
+        }
       }
     }
   }
@@ -189,6 +203,8 @@ router.get("/search", async (req, res) => {
           title: item.node.title,
           handle: item.node.handle,
           createdAt: item.node.createdAt,
+          image: item.node.images.edges[0]?.node.url,
+          price: item.node.variants.edges[0]?.node.price,
           store: store.domain,
         })) || [];
 
