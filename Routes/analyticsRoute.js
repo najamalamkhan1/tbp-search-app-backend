@@ -88,4 +88,28 @@ router.get("/analytics/recent-searches", async (req, res) => {
   res.json(data);
 });
 
+router.get("/analytics/search-trends", async (req, res) => {
+  try {
+    const data = await Analytics.aggregate([
+      { $match: { type: "search" } },
+
+      {
+        $group: {
+          _id: {
+            $dateToString: { format: "%Y-%m-%d", date: "$createdAt" },
+          },
+          count: { $sum: 1 },
+        },
+      },
+
+      { $sort: { _id: 1 } },
+    ]);
+
+    res.json(data);
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
