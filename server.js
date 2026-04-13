@@ -1,8 +1,5 @@
 const express = require ("express");
 const cors = require ("cors");
-const productsRoute = require ("./Routes/products");
-const searchRoute = require("./Routes/search");
-const storesRoute = require('./Routes/storeRoute')
 const mongoose = require('mongoose')
 require("dotenv").config();
 
@@ -23,10 +20,17 @@ db.on('error',(error)=>{
 db.once('connected',()=>{
     console.log('MongoDB connected');
 })
-// routes
 
+// Routes files import
+const productsRoute = require ("./Routes/products");
+const searchRoute = require("./Routes/search");
+const storesRoute = require('./Routes/storeRoute')
+const analyticsRoute = require('./Routes/analyticsRoute')
+
+// routes
 app.use("/api", searchRoute);
 app.use("/api", storesRoute);
+app.use('/api', analyticsRoute)
 // app.use("/api/products", productsRoute);
 
 

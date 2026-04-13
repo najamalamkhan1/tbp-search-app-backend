@@ -143,6 +143,13 @@ router.get("/search", async (req, res) => {
   try {
     const { q } = req.query;
 
+    if (q) {
+      await Analytics.create({
+        type: "search",
+        query: q,
+      });
+    }
+
     if (!q || !q.trim()) {
       return res.json({ products: [] });
     }
@@ -215,6 +222,13 @@ router.get("/search", async (req, res) => {
     });
 
     const results = await Promise.all(promises);
+    const finalProducts = results.flat();
+    if (finalProducts.length === 0) {
+      await Analytics.create({
+        type: "no_result",
+        query: q,
+      });
+    }
 
     const sorted = results
       .flat()
