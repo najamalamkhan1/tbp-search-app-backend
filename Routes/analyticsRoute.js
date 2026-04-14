@@ -114,18 +114,26 @@ router.get("/analytics/recent-searches", async (req, res) => {
 
 router.get("/analytics/search-trends", async (req, res) => {
   try {
-    const days = parseInt(req.query.days) || 7;
+    const { store, days } = req.query;
+
+    const range = parseInt(days) || 7;
 
     const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
+    startDate.setDate(startDate.getDate() - range);
+
+    const match = {
+      type: "search",
+      createdAt: { $gte: startDate },
+    };
+
+    // 🔥 STORE FILTER
+    if (store) {
+      match.store = store;
+    }
 
     const data = await Analytics.aggregate([
-      {
-        $match: {
-          type: "search",
-          createdAt: { $gte: startDate },
-        },
-      },
+      { $match: match },
+
       {
         $group: {
           _id: {
@@ -137,10 +145,12 @@ router.get("/analytics/search-trends", async (req, res) => {
           count: { $sum: 1 },
         },
       },
+
       { $sort: { _id: 1 } },
     ]);
 
     res.json(data);
+
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
