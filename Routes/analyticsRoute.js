@@ -63,21 +63,45 @@ router.get("/analytics/top-searches", async (req, res) => {
     { $match: { type: "search" } },
     { $group: { _id: "$query", count: { $sum: 1 } } },
     { $sort: { count: -1 } },
-    { $limit: 5 },
+    { $limit: 10 },
   ]);
 
   res.json(data);
 });
 
 router.get("/analytics/top-products", async (req, res) => {
-  const data = await Analytics.aggregate([
-    { $match: { type: "click" } },
-    { $group: { _id: "$productId", count: { $sum: 1 } } },
-    { $sort: { count: -1 } },
-    { $limit: 10 },
-  ]);
+  try {
+    const { store } = req.query;
 
-  res.json(data);
+    const match = {
+      type: "click",
+    };
+
+    if (store) {
+      match.store = store; // 🔥 FILTER
+    }
+
+    const data = await Analytics.aggregate([
+      { $match: match },
+
+      {
+        $group: {
+          _id: "$productId",
+          count: { $sum: 1 },
+          title: { $first: "$title" },
+          image: { $first: "$image" },
+        },
+      },
+
+      { $sort: { count: -1 } },
+      { $limit: 5 },
+    ]);
+
+    res.json(data);
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 router.get("/analytics/recent-searches", async (req, res) => {
