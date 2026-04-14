@@ -196,7 +196,6 @@ router.get("/analytics/stats/all", async (req, res) => {
   }
 });
 
-
 router.get("/analytics/search-trends/all", async (req, res) => {
   try {
     const days = parseInt(req.query.days) || 7;
@@ -211,6 +210,7 @@ router.get("/analytics/search-trends/all", async (req, res) => {
           createdAt: { $gte: startDate },
         },
       },
+
       {
         $group: {
           _id: {
@@ -220,11 +220,12 @@ router.get("/analytics/search-trends/all", async (req, res) => {
                 date: "$createdAt",
               },
             },
-            store: "$store",
+            store: "$store", // 🔥 THIS LINE ADD KARO
           },
           count: { $sum: 1 },
         },
       },
+
       {
         $sort: { "_id.date": 1 },
       },
