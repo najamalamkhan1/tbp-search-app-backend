@@ -196,4 +196,47 @@ router.get("/analytics/stats/all", async (req, res) => {
   }
 });
 
+
+router.get("/analytics/search-trends/all", async (req, res) => {
+  try {
+    const days = parseInt(req.query.days) || 7;
+
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    const data = await Analytics.aggregate([
+      {
+        $match: {
+          type: "search",
+          createdAt: { $gte: startDate },
+        },
+      },
+
+      {
+        $group: {
+          _id: {
+            date: {
+              $dateToString: {
+                format: "%Y-%m-%d",
+                date: "$createdAt",
+              },
+            },
+            store: "$store",
+          },
+          count: { $sum: 1 },
+        },
+      },
+
+      {
+        $sort: { "_id.date": 1 },
+      },
+    ]);
+
+    res.json(data);
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
