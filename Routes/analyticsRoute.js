@@ -9,7 +9,7 @@ router.post("/analytics", async (req, res) => {
       type,
       query,
       productId,
-      store,
+      store: store || null,
     });
 
     res.json({ success: true });
