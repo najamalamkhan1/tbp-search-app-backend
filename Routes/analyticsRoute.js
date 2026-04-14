@@ -196,43 +196,60 @@ router.get("/analytics/stats/all", async (req, res) => {
   }
 });
 
-router.get("/analytics/search-trends/all", async (req, res) => {
+router.get("/analytics/stats/all", async (req, res) => {
   try {
-    const days = parseInt(req.query.days) || 7;
+    // 🔥 TOTAL SEARCHES
+    const totalSearches = await Analytics.countDocuments({
+      type: "search",
+      store: { $exists: true }
+    });
 
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
+    // 🔥 TOTAL CLICKS
+    const totalClicks = await Analytics.countDocuments({
+      type: "click",
+      store: { $exists: true }
+    });
 
-    const data = await Analytics.aggregate([
+    // 🔥 STORE WISE
+    const stores = await Analytics.aggregate([
       {
         $match: {
-          type: "search",
-          createdAt: { $gte: startDate },
-          store: { $exists: true } // 🔥 ADD THIS ALSO
-        },
+          store: { $exists: true }
+        }
       },
-
       {
         $group: {
-          _id: {
-            date: {
-              $dateToString: {
-                format: "%Y-%m-%d",
-                date: "$createdAt",
-              },
-            },
-            store: "$store", // 🔥 MOST IMPORTANT
+          _id: "$store",
+          totalSearches: {
+            $sum: { $cond: [{ $eq: ["$type", "search"] }, 1, 0] }
           },
-          count: { $sum: 1 },
-        },
-      },
-
-      {
-        $sort: { "_id.date": 1 },
-      },
+          totalClicks: {
+            $sum: { $cond: [{ $eq: ["$type", "click"] }, 1, 0] }
+          }
+        }
+      }
     ]);
 
-    res.json(data);
+    // 🔥 ADD CONVERSION RATE
+    const storesWithConversion = stores.map(s => ({
+      ...s,
+      conversionRate:
+        s.totalSearches === 0
+          ? 0
+          : ((s.totalClicks / s.totalSearches) * 100).toFixed(1)
+    }));
+
+    res.json({
+      totals: {
+        totalSearches,
+        totalClicks,
+        conversionRate:
+          totalSearches === 0
+            ? 0
+            : ((totalClicks / totalSearches) * 100).toFixed(1)
+      },
+      stores: storesWithConversion
+    });
 
   } catch (err) {
     res.status(500).json({ error: err.message });
