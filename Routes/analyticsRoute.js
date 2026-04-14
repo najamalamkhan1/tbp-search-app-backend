@@ -208,6 +208,7 @@ router.get("/analytics/search-trends/all", async (req, res) => {
         $match: {
           type: "search",
           createdAt: { $gte: startDate },
+          store: { $exists: true } // 🔥 ADD THIS ALSO
         },
       },
 
@@ -220,7 +221,7 @@ router.get("/analytics/search-trends/all", async (req, res) => {
                 date: "$createdAt",
               },
             },
-            store: "$store", // 🔥 THIS LINE ADD KARO
+            store: "$store", // 🔥 MOST IMPORTANT
           },
           count: { $sum: 1 },
         },
