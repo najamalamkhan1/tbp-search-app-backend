@@ -63,9 +63,9 @@ router.post("/store/add", async (req, res) => {
 // ========================================
 // ✅ GET ALL STORES
 // ========================================
-router.get("/store/", async (req, res) => {
+router.get("/stores", async (req, res) => {
   try {
-    const stores = await Store.find().sort({ createdAt: -1 });
+    const stores = await Store.find().select("domain");
     res.json(stores);
   } catch (err) {
     res.status(500).json({ error: err.message });
