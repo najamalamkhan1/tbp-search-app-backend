@@ -156,4 +156,44 @@ router.get("/analytics/search-trends", async (req, res) => {
   }
 });
 
+
+router.get("/analytics/stats/all", async (req, res) => {
+  try {
+    const stores = await Analytics.aggregate([
+      {
+        $group: {
+          _id: "$store",
+          totalSearches: {
+            $sum: { $cond: [{ $eq: ["$type", "search"] }, 1, 0] },
+          },
+          totalClicks: {
+            $sum: { $cond: [{ $eq: ["$type", "click"] }, 1, 0] },
+          },
+          noResults: {
+            $sum: { $cond: [{ $eq: ["$type", "no_result"] }, 1, 0] },
+          },
+        },
+      },
+    ]);
+
+    // 🔥 total (all stores)
+    const totals = stores.reduce(
+      (acc, s) => ({
+        totalSearches: acc.totalSearches + s.totalSearches,
+        totalClicks: acc.totalClicks + s.totalClicks,
+        noResults: acc.noResults + s.noResults,
+      }),
+      { totalSearches: 0, totalClicks: 0, noResults: 0 }
+    );
+
+    res.json({
+      totals,
+      stores,
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
