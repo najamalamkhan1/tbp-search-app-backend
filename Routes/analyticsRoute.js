@@ -238,4 +238,13 @@ router.get("/analytics/search-trends/all", async (req, res) => {
   }
 });
 
+router.delete("/analytics/clear", async (req, res) => {
+  try {
+    await Analytics.deleteMany({});
+    res.json({ message: "All analytics deleted ✅" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
