@@ -199,6 +199,11 @@ router.get("/analytics/stats/all", async (req, res) => {
 
 router.get("/analytics/search-trends/all", async (req, res) => {
   try {
+    await Analytics.create({
+      type: "search",
+      query: q,
+      store: store.domain, // 🔥 MUST
+    });
     const days = parseInt(req.query.days) || 7;
 
     const startDate = new Date();
@@ -221,7 +226,7 @@ router.get("/analytics/search-trends/all", async (req, res) => {
                 date: "$createdAt",
               },
             },
-            store: "$store",
+            store: "$store", // 🔥 THIS IS MISSING
           },
           count: { $sum: 1 },
         },
