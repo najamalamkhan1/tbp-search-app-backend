@@ -63,7 +63,7 @@ router.post("/store/add", async (req, res) => {
 // ========================================
 // ✅ GET ALL STORES
 // ========================================
-router.get("/stores", async (req, res) => {
+router.get("/store/", async (req, res) => {
   try {
     const stores = await Store.find().select("domain");
     res.json(stores);
