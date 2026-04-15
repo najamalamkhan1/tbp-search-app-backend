@@ -82,19 +82,26 @@ router.get("/analytics/top-products", async (req, res) => {
     }
 
     const data = await Analytics.aggregate([
-      { $match: match },
-
+      {
+        $match: {
+          type: "click",
+          productId: { $exists: true }
+        }
+      },
       {
         $group: {
           _id: "$productId",
-          count: { $sum: 1 },
-          title: { $first: "$title" },
-          image: { $first: "$image" },
-        },
+          title: { $first: "$productTitle" },
+          image: { $first: "$productImage" },
+          count: { $sum: 1 }
+        }
       },
-
-      { $sort: { count: -1 } },
-      { $limit: 5 },
+      {
+        $sort: { count: -1 }
+      },
+      {
+        $limit: 5
+      }
     ]);
 
     res.json(data);
