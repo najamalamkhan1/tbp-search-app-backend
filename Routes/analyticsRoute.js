@@ -14,6 +14,9 @@ router.post("/analytics", async (req, res) => {
 
     console.log("BODY RECEIVED:", req.body);
 
+    if (!store) {
+      return res.status(400).json({ error: "Store is required" });
+    }
     await Analytics.create({
       type,
       query,
@@ -40,14 +43,17 @@ router.get("/analytics/stats", async (req, res) => {
     const prev7Days = new Date();
     prev7Days.setDate(now.getDate() - 14);
 
-    // 🔥 CURRENT DATA
+    const { store } = req.query;
+
     const currentSearches = await Analytics.countDocuments({
       type: "search",
+      store: store,
       createdAt: { $gte: last7Days },
     });
 
     const prevSearches = await Analytics.countDocuments({
       type: "search",
+      store: store,
       createdAt: { $gte: prev7Days, $lt: last7Days },
     });
 
@@ -70,8 +76,9 @@ router.get("/analytics/stats", async (req, res) => {
 });
 
 router.get("/analytics/top-searches", async (req, res) => {
+  const { store } = req.query;
   const data = await Analytics.aggregate([
-    { $match: { type: "search" } },
+    { $match: { type: "search", store: store } },
     { $group: { _id: "$query", count: { $sum: 1 } } },
     { $sort: { count: -1 } },
     { $limit: 10 },
@@ -115,7 +122,8 @@ router.get("/analytics/top-products", async (req, res) => {
 });
 
 router.get("/analytics/recent-searches", async (req, res) => {
-  const data = await Analytics.find({ type: "search" })
+  const { store } = req.query;
+  const data = await Analytics.find({ type: "search", store: store })
     .sort({ createdAt: -1 })
     .limit(5);
 
@@ -128,13 +136,13 @@ router.get("/analytics/search-trends", async (req, res) => {
 
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
-
+    const { store } = req.query;
     const data = await Analytics.aggregate([
       {
         $match: {
           type: "search",
           createdAt: { $gte: startDate },
-          store: { $exists: true, $ne: null }, // 🔥 IMPORTANT
+          store: store
         },
       },
       {
