@@ -3,16 +3,26 @@ const router = require("./search");
 
 router.post("/analytics", async (req, res) => {
   try {
-    const { type, query, productId, store } = req.body;
-
-    const newData = await Analytics.create({
+    const {
       type,
       query,
       productId,
+      store,
+      productTitle,   // 🔥 ADD
+      productImage    // 🔥 ADD
+    } = req.body;
+
+    await Analytics.create({
+      type,
+      query,
+      productId,
+      productTitle: productTitle || null, // 🔥 MUST
+      productImage: productImage || null, // 🔥 MUST
       store: store || null,
     });
 
     res.json({ success: true });
+    console.log("BODY RECEIVED:", req.body);
 
   } catch (err) {
     res.status(500).json({ error: err.message });
