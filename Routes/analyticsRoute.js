@@ -112,7 +112,49 @@ router.get("/analytics/recent-searches", async (req, res) => {
   res.json(data);
 });
 
-search-trends
+router.get("/analytics/search-trends", async (req, res) => {
+  try {
+    const days = parseInt(req.query.days) || 7;
+
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    const data = await Analytics.aggregate([
+      {
+        $match: {
+          type: "search",
+          createdAt: { $gte: startDate },
+          store: { $exists: true, $ne: null }, // 🔥 IMPORTANT
+        },
+      },
+      {
+        $group: {
+          _id: {
+            date: {
+              $dateToString: {
+                format: "%Y-%m-%d",
+                date: "$createdAt",
+              },
+            },
+            store: "$store",
+          },
+          count: { $sum: 1 },
+        },
+      },
+      {
+        $sort: { "_id.date": 1 },
+      },
+    ]);
+
+    console.log("SEARCH TRENDS:", data); // 🔥 debug
+
+    res.json(data);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 
 router.get("/analytics/stats/all", async (req, res) => {
