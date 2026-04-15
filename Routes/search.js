@@ -44,7 +44,7 @@ router.get("/search", async (req, res) => {
     const promises = stores.map(async (store) => {
       try {
         const response = await fetch(
-          `https://${store.domain}/admin/api/2024-01/graphql.json`,
+          `https://${store.domain.replace(/\/$/, "")}/admin/api/2024-01/graphql.json`,
           {
             method: "POST",
             headers: {
@@ -137,7 +137,7 @@ router.get("/trending", async (req, res) => {
     const promises = stores.map(async (store) => {
       try {
         const response = await fetch(
-          `https://${store.domain}/admin/api/2024-01/graphql.json`,
+          `https://${store.domain.replace(/\/$/, "")}/admin/api/2024-01/graphql.json`,
           {
             method: "POST",
             headers: {
