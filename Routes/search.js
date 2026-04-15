@@ -71,9 +71,7 @@ router.get("/search", async (req, res) => {
           variants(first: 1) {
             edges {
               node {
-                price {
-                  amount
-                }
+                price 
               }
             }
           }
