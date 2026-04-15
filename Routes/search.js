@@ -144,19 +144,11 @@ router.get("/search", async (req, res) => {
   try {
     const { q } = req.query;
 
-    if (q) {
-      await Analytics.create({
-        type: "search",
-        query: q,
-      });
-    }
-
     if (!q || !q.trim()) {
       return res.json({ products: [] });
     }
 
     const stores = await Store.find();
-    console.log("STORES FROM DB:", stores);
 
     const promises = stores.map(async (store) => {
       try {
@@ -170,72 +162,57 @@ router.get("/search", async (req, res) => {
             },
             body: JSON.stringify({
               query: `
-{
-  products(first: 10, sortKey: CREATED_AT, reverse: true, query: "title:*${q}*") {
-    edges {
-      node {
-        id
-        title
-        handle
-        createdAt
-        images(first: 1) {
-  edges {
-    node {
-      url
-    }
-  }
-}
-        variants(first: 1) {
-          edges {
-            node {
-              price: item.node.variants.edges[0]?.node?.price?.amount || "0"
-            }
-          }
-        }
-      }
-    }
-  }
-}
-`
+              {
+                products(first: 5, query: "title:*${q}* OR tag:*${q}*") {
+                  edges {
+                    node {
+                      id
+                      title
+                      handle
+                      images(first: 1) {
+                        edges {
+                          node {
+                            url
+                          }
+                        }
+                      }
+                      variants(first: 1) {
+                        edges {
+                          node {
+                            price {
+                              amount
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              `,
             }),
           }
         );
 
         const data = await response.json();
 
-        console.log("STORE:", store.domain);
-        console.log("SHOPIFY RESPONSE:", JSON.stringify(data, null, 2));
-
         return data?.data?.products?.edges?.map((item) => ({
           id: item.node.id,
           title: item.node.title,
           handle: item.node.handle,
-          createdAt: item.node.createdAt,
-          image: item.node.images.edges[0]?.node.url,
-          price: item.node.variants.edges[0]?.node.price,
+          image: item.node.images?.edges?.[0]?.node?.url || "",
+          price: item.node.variants?.edges?.[0]?.node?.price?.amount || "0",
           store: store.domain,
         })) || [];
 
       } catch (err) {
-        console.log("ERROR:", store.domain);
+        console.log("SEARCH ERROR:", store.domain);
         return [];
       }
     });
 
     const results = await Promise.all(promises);
-    const finalProducts = results.flat();
-    if (finalProducts.length === 0) {
-      await Analytics.create({
-        type: "no_result",
-        query: q,
-      });
-    }
-
-    const sorted = results
-      .flat()
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-    res.json({ products: sorted });
+    res.json({ products: results.flat() });
 
   } catch (err) {
     res.status(500).json({ error: err.message });
