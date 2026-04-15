@@ -136,8 +136,10 @@ router.get("/trending", async (req, res) => {
 
     const promises = stores.map(async (store) => {
       try {
+        const cleanDomain = store.domain.replace(/\/$/, "");
+
         const response = await fetch(
-          `https://${store.domain.replace(/\/$/, "")}/admin/api/2024-01/graphql.json`,
+          `https://${cleanDomain}/admin/api/2024-01/graphql.json`,
           {
             method: "POST",
             headers: {
@@ -147,31 +149,30 @@ router.get("/trending", async (req, res) => {
             body: JSON.stringify({
               query: `
               {
-  products(first: 10, sortKey: CREATED_AT, reverse: true, query: "${q}") {
-    edges {
-      node {
-        id
-        title
-        handle
-        createdAt
-        images(first: 1) {
-          edges {
-            node {
-              url
-            }
-          }
-        }
-        variants(first: 1) {
-          edges {
-            node {
-              price   // ✅ FIXED
-            }
-          }
-        }
-      }
-    }
-  }
-}
+                products(first: 5, sortKey: CREATED_AT, reverse: true) {
+                  edges {
+                    node {
+                      id
+                      title
+                      handle
+                      images(first: 1) {
+                        edges {
+                          node {
+                            url
+                          }
+                        }
+                      }
+                      variants(first: 1) {
+                        edges {
+                          node {
+                            price
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
               `,
             }),
           }
@@ -179,16 +180,24 @@ router.get("/trending", async (req, res) => {
 
         const data = await response.json();
 
-        return data?.data?.products?.edges?.map((item) => ({
-          id: item.node.id,
-          title: item.node.title,
-          handle: item.node.handle,
-          image: item.node.images?.edges?.[0]?.node?.url || "",
-          price: item.node.variants?.edges?.[0]?.node?.price?.amount || "0",
-          store: store.domain,
-        })) || [];
+        return (
+          data?.data?.products?.edges?.map((item) => {
+            const node = item.node;
 
+            return {
+              id: node.id,
+              title: node.title,
+              handle: node.handle,
+
+              image: node.images?.edges?.[0]?.node?.url || "",
+              price: node.variants?.edges?.[0]?.node?.price || "0",
+
+              store: cleanDomain,
+            };
+          }) || []
+        );
       } catch (err) {
+        console.log("TRENDING ERROR:", store.domain);
         return [];
       }
     });
