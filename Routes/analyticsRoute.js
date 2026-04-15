@@ -198,25 +198,17 @@ router.get("/analytics/stats/all", async (req, res) => {
 
 router.get("/analytics/stats/all", async (req, res) => {
   try {
-    // 🔥 TOTAL SEARCHES
-    const totalSearches = await Analytics.countDocuments({
-      type: "search",
-      store: { $exists: true }
-    });
+    const days = parseInt(req.query.days) || 7;
 
-    // 🔥 TOTAL CLICKS
-    const totalClicks = await Analytics.countDocuments({
-      type: "click",
-      store: { $exists: true }
-    });
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
 
-    // 🔥 STORE WISE
+    // 🔥 EXISTING TOTALS
+    const totalSearches = await Analytics.countDocuments({ type: "search" });
+    const totalClicks = await Analytics.countDocuments({ type: "click" });
+
+    // 🔥 STORE STATS
     const stores = await Analytics.aggregate([
-      {
-        $match: {
-          store: { $exists: true }
-        }
-      },
       {
         $group: {
           _id: "$store",
@@ -230,25 +222,39 @@ router.get("/analytics/stats/all", async (req, res) => {
       }
     ]);
 
-    // 🔥 ADD CONVERSION RATE
-    const storesWithConversion = stores.map(s => ({
-      ...s,
-      conversionRate:
-        s.totalSearches === 0
-          ? 0
-          : ((s.totalClicks / s.totalSearches) * 100).toFixed(1)
-    }));
+    // 🔥 NEW: TREND DATA ADD
+    const trends = await Analytics.aggregate([
+      {
+        $match: {
+          type: "search",
+          createdAt: { $gte: startDate },
+          store: { $exists: true }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            date: {
+              $dateToString: {
+                format: "%Y-%m-%d",
+                date: "$createdAt"
+              }
+            },
+            store: "$store"
+          },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { "_id.date": 1 } }
+    ]);
 
     res.json({
       totals: {
         totalSearches,
-        totalClicks,
-        conversionRate:
-          totalSearches === 0
-            ? 0
-            : ((totalClicks / totalSearches) * 100).toFixed(1)
+        totalClicks
       },
-      stores: storesWithConversion
+      stores,
+      trends // 🔥 ADD THIS
     });
 
   } catch (err) {
