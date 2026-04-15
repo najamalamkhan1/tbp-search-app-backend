@@ -182,7 +182,7 @@ router.get("/trending", async (req, res) => {
 
         const data = await response.json();
 
-        eturn data?.data?.products?.edges?.map((item) => ({
+        return data?.data?.products?.edges?.map((item) => ({
           id: item.node.id,
           title: item.node.title,
           handle: item.node.handle,
