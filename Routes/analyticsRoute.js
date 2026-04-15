@@ -12,6 +12,8 @@ router.post("/analytics", async (req, res) => {
       productImage    // 🔥 ADD
     } = req.body;
 
+    console.log("BODY RECEIVED:", req.body);
+
     await Analytics.create({
       type,
       query,
@@ -22,7 +24,6 @@ router.post("/analytics", async (req, res) => {
     });
 
     res.json({ success: true });
-    console.log("BODY RECEIVED:", req.body);
 
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -85,33 +86,25 @@ router.get("/analytics/top-products", async (req, res) => {
 
     const match = {
       type: "click",
+      productId: { $exists: true }
     };
 
     if (store) {
-      match.store = store; // 🔥 FILTER
+      match.store = store;
     }
 
     const data = await Analytics.aggregate([
-      {
-        $match: {
-          type: "click",
-          productId: { $exists: true }
-        }
-      },
+      { $match: match },
       {
         $group: {
           _id: "$productId",
-          title: { $first: "$productTitle" },
-          image: { $first: "$productImage" },
+          title: { $max: "$productTitle" },
+          image: { $max: "$productImage" },
           count: { $sum: 1 }
         }
       },
-      {
-        $sort: { count: -1 }
-      },
-      {
-        $limit: 5
-      }
+      { $sort: { count: -1 } },
+      { $limit: 5 }
     ]);
 
     res.json(data);
