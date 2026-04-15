@@ -179,16 +179,16 @@ router.get("/search", async (req, res) => {
         handle
         createdAt
         images(first: 1) {
-          edges {
-            node {
-              url
-            }
-          }
-        }
+  edges {
+    node {
+      url
+    }
+  }
+}
         variants(first: 1) {
           edges {
             node {
-              price
+              price: item.node.variants.edges[0]?.node?.price?.amount || "0"
             }
           }
         }
@@ -265,6 +265,22 @@ router.get("/trending", async (req, res) => {
                       id
                       title
                       handle
+                      images(first: 1) {
+                        edges {
+                          node {
+                            url
+                          }
+                        }
+                      }
+                      variants(first: 1) {
+                        edges {
+                          node {
+                            price {
+                              amount
+                            }
+                          }
+                        }
+                      }
                     }
                   }
                 }
@@ -280,10 +296,13 @@ router.get("/trending", async (req, res) => {
           id: item.node.id,
           title: item.node.title,
           handle: item.node.handle,
+          image: item.node.images?.edges?.[0]?.node?.url || "",
+          price: item.node.variants?.edges?.[0]?.node?.price?.amount || "0",
           store: store.domain,
         })) || [];
 
       } catch (err) {
+        console.log("ERROR TRENDING:", store.domain);
         return [];
       }
     });
