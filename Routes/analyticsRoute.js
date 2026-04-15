@@ -112,49 +112,7 @@ router.get("/analytics/recent-searches", async (req, res) => {
   res.json(data);
 });
 
-router.get("/analytics/search-trends", async (req, res) => {
-  try {
-    const { store, days } = req.query;
-
-    const range = parseInt(days) || 7;
-
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - range);
-
-    const match = {
-      type: "search",
-      createdAt: { $gte: startDate },
-    };
-
-    // 🔥 STORE FILTER
-    if (store) {
-      match.store = store;
-    }
-
-    const data = await Analytics.aggregate([
-      { $match: match },
-
-      {
-        $group: {
-          _id: {
-            $dateToString: {
-              format: "%Y-%m-%d",
-              date: "$createdAt",
-            },
-          },
-          count: { $sum: 1 },
-        },
-      },
-
-      { $sort: { _id: 1 } },
-    ]);
-
-    res.json(data);
-
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+search-trends
 
 
 router.get("/analytics/stats/all", async (req, res) => {
@@ -198,17 +156,25 @@ router.get("/analytics/stats/all", async (req, res) => {
 
 router.get("/analytics/stats/all", async (req, res) => {
   try {
-    const days = parseInt(req.query.days) || 7;
+    // 🔥 TOTAL SEARCHES
+    const totalSearches = await Analytics.countDocuments({
+      type: "search",
+      store: { $exists: true }
+    });
 
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
+    // 🔥 TOTAL CLICKS
+    const totalClicks = await Analytics.countDocuments({
+      type: "click",
+      store: { $exists: true }
+    });
 
-    // 🔥 EXISTING TOTALS
-    const totalSearches = await Analytics.countDocuments({ type: "search" });
-    const totalClicks = await Analytics.countDocuments({ type: "click" });
-
-    // 🔥 STORE STATS
+    // 🔥 STORE WISE
     const stores = await Analytics.aggregate([
+      {
+        $match: {
+          store: { $exists: true }
+        }
+      },
       {
         $group: {
           _id: "$store",
@@ -222,39 +188,25 @@ router.get("/analytics/stats/all", async (req, res) => {
       }
     ]);
 
-    // 🔥 NEW: TREND DATA ADD
-    const trends = await Analytics.aggregate([
-      {
-        $match: {
-          type: "search",
-          createdAt: { $gte: startDate },
-          store: { $exists: true }
-        }
-      },
-      {
-        $group: {
-          _id: {
-            date: {
-              $dateToString: {
-                format: "%Y-%m-%d",
-                date: "$createdAt"
-              }
-            },
-            store: "$store"
-          },
-          count: { $sum: 1 }
-        }
-      },
-      { $sort: { "_id.date": 1 } }
-    ]);
+    // 🔥 ADD CONVERSION RATE
+    const storesWithConversion = stores.map(s => ({
+      ...s,
+      conversionRate:
+        s.totalSearches === 0
+          ? 0
+          : ((s.totalClicks / s.totalSearches) * 100).toFixed(1)
+    }));
 
     res.json({
       totals: {
         totalSearches,
-        totalClicks
+        totalClicks,
+        conversionRate:
+          totalSearches === 0
+            ? 0
+            : ((totalClicks / totalSearches) * 100).toFixed(1)
       },
-      stores,
-      trends // 🔥 ADD THIS
+      stores: storesWithConversion
     });
 
   } catch (err) {
