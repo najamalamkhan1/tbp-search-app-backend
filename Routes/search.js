@@ -23,123 +23,6 @@ router.post("/api/stores/add", async (req, res) => {
   }
 });
 
-// router.get("/", async (req, res) => {
-//   const searchQuery = req.query.q || "";
-
-//   try {
-//     const response = await fetch(SHOPIFY_URL, {
-//       method: "POST",
-//       headers: {
-//         "Content-Type": "application/json",
-//         "X-Shopify-Storefront-Access-Token": process.env.SHOPIFY_TOKEN,
-//       },
-//       body: JSON.stringify({
-//         query: `
-// {
-//   products(
-//     first: 10,
-//     query: "title:*${searchQuery}* OR tag:*${searchQuery}* OR vendor:*${searchQuery} OR body:*${searchQuery}*",
-//     sortKey: CREATED_AT,
-//     reverse: true
-//   ) {
-//     edges {
-//       node {
-//         id
-//         title
-//         handle
-//         createdAt
-//         images(first: 1) {
-//           edges {
-//             node {
-//               url
-//             }
-//           }
-//         }
-//         variants(first: 1) {
-//           edges {
-//             node {
-//               price {
-//                 amount
-//               }
-//             }
-//           }
-//         }
-//       }
-//     }
-//   }
-// }
-// `,
-//       }),
-//     });
-
-//     const data = await response.json();
-
-//     const products = data.data.products.edges.map((item) => ({
-//       id: item.node.id,
-//       title: item.node.title,
-//       image: item.node.images.edges?.[0]?.node?.url || "",
-//       price: item.node.variants.edges?.[0]?.node?.price?.amount || "0",
-//     }));
-
-//     res.json(products);
-//   } catch (error) {
-//     console.error(error);
-//     res.status(500).json({ error: "Search failed" });
-//   }
-// });
-
-// Trending now route
-// router.get("/api/search", async (req, res) => {
-//   const { q } = req.query;
-
-//   const stores = await Store.find();
-
-//   let results = [];
-
-//   for (let store of stores) {
-//     try {
-//       const response = await fetch(
-//         `https://${store.domain}/admin/api/2024-01/graphql.json`,
-//         {
-//           method: "POST",
-//           headers: {
-//             "X-Shopify-Access-Token": store.accessToken,
-//             "Content-Type": "application/json"
-//           },
-//           body: JSON.stringify({
-//             query: `
-//               {
-//                 products(first: 5, query: "title:${q}") {
-//                   edges {
-//                     node {
-//                       id
-//                       title
-//                     }
-//                   }
-//                 }
-//               }
-//             `
-//           })
-//         }
-//       );
-
-//       const data = await response.json();
-
-//       const products = data.data.products.edges.map(e => ({
-//         ...e.node,
-//         store: store.domain
-//       }));
-
-//       results.push(...products);
-
-//     } catch (err) {
-//       console.log("Error with store:", store.domain);
-//     }
-//   }
-
-//   res.json({ products: results });
-// });
-
 router.get("/search", async (req, res) => {
   try {
     const { q } = req.query;
@@ -170,33 +53,35 @@ router.get("/search", async (req, res) => {
             },
             body: JSON.stringify({
               query: `
-{
-  products(first: 10, sortKey: CREATED_AT, reverse: true, query: "title:*${q}*") {
-    edges {
-      node {
-        id
-        title
-        handle
-        createdAt
-        images(first: 1) {
-          edges {
-            node {
-              url
+  {
+    products(first: 10, sortKey: CREATED_AT, reverse: true, query: "${q}") {
+      edges {
+        node {
+          id
+          title
+          handle
+          createdAt
+          images(first: 1) {
+            edges {
+              node {
+                url
+              }
             }
           }
-        }
-        variants(first: 1) {
-          edges {
-            node {
-              price
+          variants(first: 1) {
+            edges {
+              node {
+                price {
+                  amount
+                }
+              }
             }
           }
         }
       }
     }
   }
-}
-`
+  `,
             }),
           }
         );
@@ -211,8 +96,13 @@ router.get("/search", async (req, res) => {
           title: item.node.title,
           handle: item.node.handle,
           createdAt: item.node.createdAt,
-          image: item.node.images.edges[0]?.node.url,
-          price: item.node.variants.edges[0]?.node.price,
+
+          // ✅ SAFE IMAGE
+          image: item.node.images?.edges?.[0]?.node?.url || "",
+
+          // ✅ CORRECT PRICE
+          price: item.node.variants?.edges?.[0]?.node?.price?.amount || "0",
+
           store: store.domain,
         })) || [];
 
@@ -259,16 +149,32 @@ router.get("/trending", async (req, res) => {
             body: JSON.stringify({
               query: `
               {
-                products(first: 5, sortKey: CREATED_AT, reverse: true) {
-                  edges {
-                    node {
-                      id
-                      title
-                      handle
-                    }
-                  }
-                }
+  products(first: 5, sortKey: CREATED_AT, reverse: true) {
+    edges {
+      node {
+        id
+        title
+        handle
+        images(first: 1) {
+          edges {
+            node {
+              url
+            }
+          }
+        }
+        variants(first: 1) {
+          edges {
+            node {
+              price {
+                amount
               }
+            }
+          }
+        }
+      }
+    }
+  }
+}
               `,
             }),
           }
@@ -276,10 +182,12 @@ router.get("/trending", async (req, res) => {
 
         const data = await response.json();
 
-        return data?.data?.products?.edges?.map((item) => ({
+        eturn data?.data?.products?.edges?.map((item) => ({
           id: item.node.id,
           title: item.node.title,
           handle: item.node.handle,
+          image: item.node.images?.edges?.[0]?.node?.url || "",
+          price: item.node.variants?.edges?.[0]?.node?.price?.amount || "0",
           store: store.domain,
         })) || [];
 
