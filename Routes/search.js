@@ -149,12 +149,13 @@ router.get("/trending", async (req, res) => {
             body: JSON.stringify({
               query: `
               {
-  products(first: 5, sortKey: CREATED_AT, reverse: true) {
+  products(first: 10, sortKey: CREATED_AT, reverse: true, query: "${q}") {
     edges {
       node {
         id
         title
         handle
+        createdAt
         images(first: 1) {
           edges {
             node {
@@ -165,9 +166,7 @@ router.get("/trending", async (req, res) => {
         variants(first: 1) {
           edges {
             node {
-              price {
-                amount
-              }
+              price   // ✅ FIXED
             }
           }
         }
