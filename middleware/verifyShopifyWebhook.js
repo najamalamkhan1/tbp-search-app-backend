@@ -1,20 +1,28 @@
 const crypto = require("crypto");
 
 const verifyShopifyWebhook = (req, res, next) => {
-  const hmac = req.headers["x-shopify-hmac-sha256"];
-  const hash = crypto
-    .createHmac("sha256", process.env.SHOPIFY_WEBHOOK_SECRET)
-    .update(body, "utf8")
-    .digest("base64");
+  try {
+    const hmac = req.headers["x-shopify-hmac-sha256"];
 
-  if (hash !== hmac) {
-    return res.status(401).send("Webhook verification failed");
+    if (!process.env.SHOPIFY_WEBHOOK_SECRET) {
+      return res.status(500).send("Secret missing ❌");
+    }
+
+    const hash = crypto
+      .createHmac("sha256", process.env.SHOPIFY_WEBHOOK_SECRET)
+      .update(req.body) // ✅ IMPORTANT (no stringify, no 'body')
+      .digest("base64");
+
+    if (hash !== hmac) {
+      return res.status(401).send("Webhook verification failed ❌");
+    }
+
+    next();
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Webhook error");
   }
-
-  console.log("👉 HMAC HEADER:", hmac);
-  console.log("👉 GENERATED HASH:", hash);
-
-  next();
 };
 
 module.exports = verifyShopifyWebhook;
