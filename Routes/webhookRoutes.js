@@ -29,6 +29,9 @@ router.post("/products/create", verifyShopifyWebhook, async (req, res) => {
 });
 
 router.post("/products/update", verifyShopifyWebhook, async (req, res) => {
+
+  console.log("🔥 WEBHOOK HIT:", req.body.title); //debug
+
   const shop = req.headers["x-shopify-shop-domain"];
   const product = req.body;
 

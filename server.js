@@ -38,6 +38,9 @@ app.use('/api', settingsRoute)
 app.use("/api/", productsRoute);
 app.use("/webhooks", webhooks);
 
+app.get("/", (req, res) => {
+  res.send("Backend Running Successfully✅");
+});
 
 app.listen(process.env.PORT, () => {
     console.log(`Server running on port ${process.env.PORT}`);

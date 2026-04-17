@@ -1,6 +1,7 @@
 node_modules/
 .env
 .env.*
+hmac-test.js
 dist/
 build/
 logs/
