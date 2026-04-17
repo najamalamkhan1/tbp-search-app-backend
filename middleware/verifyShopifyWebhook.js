@@ -5,7 +5,7 @@ const verifyShopifyWebhook = (req, res, next) => {
 
   const hash = crypto
     .createHmac("sha256", process.env.SHOPIFY_WEBHOOK_SECRET)
-    .update(JSON.stringify(req.body)) // ✅ req.body must be Buffer
+    .update(req.body) // ✅ RAW BODY
     .digest("base64");
 
   if (hash !== hmac) {
@@ -13,8 +13,6 @@ const verifyShopifyWebhook = (req, res, next) => {
   }
 
   next();
-  console.log("TYPE:", typeof req.body);
-  console.log("IS BUFFER:", Buffer.isBuffer(req.body));
 };
 
 module.exports = verifyShopifyWebhook;

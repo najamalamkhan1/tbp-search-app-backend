@@ -4,7 +4,7 @@ const router = express.Router();
 const Product = require("../Models/productModel");
 const verifyShopifyWebhook = require("../middleware/verifyShopifyWebhook");
 
-router.post("/webhooks/products/create", verifyShopifyWebhook, async (req, res) => {
+router.post("/products/create", verifyShopifyWebhook, async (req, res) => {
   const shop = req.headers["x-shopify-shop-domain"];
   const product = req.body;
 
@@ -28,7 +28,7 @@ router.post("/webhooks/products/create", verifyShopifyWebhook, async (req, res) 
   res.status(200).send("OK");
 });
 
-router.post("/webhooks/products/update", async (req, res) => {
+router.post("/products/update", verifyShopifyWebhook, async (req, res) => {
   const shop = req.headers["x-shopify-shop-domain"];
   const product = req.body;
 
@@ -52,7 +52,7 @@ router.post("/webhooks/products/update", async (req, res) => {
   res.status(200).send("OK");
 });
 
-router.post("/webhooks/products/delete", verifyShopifyWebhook, async (req, res) => {
+router.post("/products/delete", verifyShopifyWebhook, async (req, res) => {
   const shop = req.headers["x-shopify-shop-domain"];
   const product = req.body;
 

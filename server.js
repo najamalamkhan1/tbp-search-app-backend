@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const mongoose = require('mongoose')
 require("dotenv").config();
+const webhooks = require('./Routes/webhookRoutes');
 
 const app = express();
 
@@ -35,7 +36,7 @@ app.use("/api", storesRoute);
 app.use('/api', analyticsRoute)
 app.use('/api', settingsRoute)
 app.use("/api/", productsRoute);
-app.use("/api", require("./Routes/webhookRoutes"));
+app.use("/webhooks", webhooks);
 
 
 app.listen(process.env.PORT, () => {
