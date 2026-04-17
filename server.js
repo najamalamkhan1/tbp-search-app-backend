@@ -6,9 +6,9 @@ const webhooks = require('./Routes/webhookRoutes');
 
 const app = express();
 
-app.use(cors());
 app.use("/webhooks", express.raw({ type: "application/json" }));
 app.use(express.json());
+app.use(cors());
 
 // MongoDB Connection
 mongoose.connect(
