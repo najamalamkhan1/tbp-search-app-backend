@@ -39,7 +39,11 @@ app.use("/api/", productsRoute);
 app.use("/webhooks", webhooks);
 
 app.get("/", (req, res) => {
+<<<<<<< HEAD
   res.send("Backend Running Successfully✅");
+=======
+  res.send("Backend Running ✅");
+>>>>>>> f186541e10d0efb4afdbd1aa9b54d7a5968791ae
 });
 
 app.listen(process.env.PORT, () => {
