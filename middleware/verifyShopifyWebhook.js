@@ -5,13 +5,15 @@ const verifyShopifyWebhook = (req, res, next) => {
 
   const hash = crypto
     .createHmac("sha256", process.env.SHOPIFY_WEBHOOK_SECRET)
-    .update(req.body) // ✅ RAW BODY
+    .update(req.body, "utf8") // ✅ IMPORTANT
     .digest("base64");
 
   if (hash !== hmac) {
+    console.log("❌ HMAC FAILED");
     return res.status(401).send("Webhook verification failed");
   }
 
+  console.log("✅ HMAC VERIFIED");
   next();
 };
 
