@@ -5,7 +5,9 @@ const fetch = require("node-fetch");
 
 router.get("/", (req, res) => {
     const { shop } = req.query;
-    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    
+    // ✅ hardcode Railway URL — req.protocol pe trust mat karo
+    const baseUrl = process.env.HOST;
     const redirectUri = `${baseUrl}/auth/callback`;
     const installUrl = `https://${shop}/admin/oauth/authorize?client_id=${process.env.SHOPIFY_API_KEY}&scope=read_products,write_products&redirect_uri=${redirectUri}`;
     res.redirect(installUrl);
