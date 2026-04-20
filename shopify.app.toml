@@ -1,0 +1,23 @@
+client_id = "c764fc1a2819d17de0fb9f9c368412af"
+name = "search by tbp"
+application_url = "https://tbp-search-app-backend-production.up.railway.app"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = true
+include_config_on_deploy = true
+
+[webhooks]
+api_version = "2026-07"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
+  uri = "/webhooks/app/uninstalled"
+
+[access_scopes]
+scopes = "read_products,write_products"
+
+[auth]
+redirect_urls = [
+  "https://tbp-search-app-backend-production.up.railway.app/auth/callback"
+]
