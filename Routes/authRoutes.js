@@ -1,7 +1,6 @@
 const express = require("express");
 const router = express.Router();
 const Store = require('../Models/store');
-// node-fetch v2 use kar rahe hain, ya Node 18+ mein yeh line hata do
 const fetch = require("node-fetch");
 
 router.get("/", (req, res) => {
@@ -13,51 +12,58 @@ router.get("/", (req, res) => {
 });
 
 router.get("/callback", async (req, res) => {
-  const { shop, code } = req.query;
-  const baseUrl = `${req.protocol}://${req.get("host")}`; // ✅ yahan define karo
+    const { shop, code } = req.query;
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
 
-  const response = await fetch(`https://${shop}/admin/oauth/access_token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      client_id: process.env.SHOPIFY_API_KEY,
-      client_secret: process.env.SHOPIFY_API_SECRET,
-      code,
-    }),
-  });
+    const response = await fetch(`https://${shop}/admin/oauth/access_token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            client_id: process.env.SHOPIFY_API_KEY,
+            client_secret: process.env.SHOPIFY_API_SECRET,
+            code,
+        }),
+    });
 
-  const data = await response.json();
-  const accessToken = data.access_token;
+    const data = await response.json();
+    const accessToken = data.access_token;
 
-  await Store.findOneAndUpdate(
-    { shop },
-    { shop, accessToken },
-    { upsert: true }
-  );
+    // ✅ domain field use karo
+    await Store.findOneAndUpdate(
+        { domain: shop },
+        { domain: shop, accessToken },
+        { upsert: true }
+    );
 
-  await registerWebhooks(shop, accessToken, baseUrl); // ✅ baseUrl pass karo
+    await registerWebhooks(shop, accessToken, baseUrl);
 
-  res.send("App Installed Successfully ✅");
+    res.send("App Installed Successfully ✅");
 });
 
-// ✅ baseUrl parameter add kiya
 const registerWebhooks = async (shop, accessToken, baseUrl) => {
-  const webhookUrl = `${baseUrl}/webhooks/products/update`;
+    const topics = [
+        "products/create",
+        "products/update",
+        "products/delete"
+    ];
 
-  await fetch(`https://${shop}/admin/api/2023-10/webhooks.json`, {
-    method: "POST",
-    headers: {
-      "X-Shopify-Access-Token": accessToken,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      webhook: {
-        topic: "products/update",
-        address: webhookUrl,
-        format: "json",
-      },
-    }),
-  });
+    for (const topic of topics) {
+        await fetch(`https://${shop}/admin/api/2023-10/webhooks.json`, {
+            method: "POST",
+            headers: {
+                "X-Shopify-Access-Token": accessToken,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                webhook: {
+                    topic,
+                    address: `${baseUrl}/webhooks/${topic}`, // ✅ clean
+                    format: "json",
+                },
+            }),
+        });
+        console.log("✅ Webhook registered:", topic);
+    }
 };
 
 module.exports = router;
