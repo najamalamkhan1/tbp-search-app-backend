@@ -6,7 +6,9 @@ const fetch = require("node-fetch");
 router.get("/auth", (req, res) => {
     const { shop } = req.query;
 
-    const redirectUri = `${process.env.BASE_URL}/auth/callback`;
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+
+    const redirectUri = `${baseUrl}/auth/callback`;
 
     const installUrl = `https://${shop}/admin/oauth/authorize?client_id=${process.env.SHOPIFY_API_KEY}&scope=read_products,write_products&redirect_uri=${redirectUri}`;
 
@@ -45,7 +47,7 @@ router.get("/auth/callback", async (req, res) => {
 });
 
 const registerWebhooks = async (shop, accessToken) => {
-  const webhookUrl = `${process.env.BASE_URL}/webhooks/products/update`;
+  const webhookUrl = `${baseUrl}/webhooks/products/update`;
 
   await fetch(`https://${shop}/admin/api/2023-10/webhooks.json`, {
     method: "POST",
