@@ -13,31 +13,46 @@ router.get("/", (req, res) => {
 
 router.get("/callback", async (req, res) => {
     const { shop, code } = req.query;
+    
+    // ✅ Yeh add karo
+    if (!shop || !code) {
+        return res.status(400).send("Missing shop or code param");
+    }
+
     const baseUrl = `${req.protocol}://${req.get("host")}`;
 
-    const response = await fetch(`https://${shop}/admin/oauth/access_token`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            client_id: process.env.SHOPIFY_API_KEY,
-            client_secret: process.env.SHOPIFY_API_SECRET,
-            code,
-        }),
-    });
+    try {
+        const response = await fetch(`https://${shop}/admin/oauth/access_token`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                client_id: process.env.SHOPIFY_API_KEY,
+                client_secret: process.env.SHOPIFY_API_SECRET,
+                code,
+            }),
+        });
 
-    const data = await response.json();
-    const accessToken = data.access_token;
+        const data = await response.json();
+        const accessToken = data.access_token;
 
-    // ✅ domain field use karo
-    await Store.findOneAndUpdate(
-        { domain: shop },
-        { domain: shop, accessToken },
-        { upsert: true }
-    );
+        if (!accessToken) {
+            return res.status(400).send("Failed to get access token: " + JSON.stringify(data));
+        }
 
-    await registerWebhooks(shop, accessToken, baseUrl);
+        await Store.findOneAndUpdate(
+            { domain: shop },
+            { domain: shop, accessToken },
+            { upsert: true }
+        );
 
-    res.send("App Installed Successfully ✅");
+        await registerWebhooks(shop, accessToken, baseUrl);
+
+        res.send("App Installed Successfully ✅");
+
+    } catch (err) {
+        console.error("Callback error:", err);
+        res.status(500).send("Error: " + err.message);
+    }
 });
 
 const registerWebhooks = async (shop, accessToken, baseUrl) => {
