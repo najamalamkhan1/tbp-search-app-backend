@@ -30,7 +30,13 @@ router.post("/products/create", verifyShopifyWebhook, async (req, res) => {
 
 router.post("/products/update", verifyShopifyWebhook, async (req, res) => {
 
-  const data = JSON.parse(req.body.toString()); // ✅ FIX
+  let data;
+
+  try {
+    data = JSON.parse(req.body.toString());
+  } catch (err) {
+    return res.status(400).send("Invalid JSON");
+  }
 
   console.log("🔥 WEBHOOK HIT:", data.title);
 
