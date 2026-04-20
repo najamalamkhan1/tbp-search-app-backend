@@ -30,17 +30,18 @@ router.post("/products/create", verifyShopifyWebhook, async (req, res) => {
 
 router.post("/products/update", verifyShopifyWebhook, async (req, res) => {
 
-  let data;
+  const data = JSON.parse(req.body.toString());
+  const shop = req.headers["x-shopify-shop-domain"];
 
-  try {
-    data = JSON.parse(req.body.toString());
-  } catch (err) {
-    return res.status(400).send("Invalid JSON");
+  // 🔥 ADD THIS
+  const store = await Store.findOne({ domain: shop });
+
+  if (!store) {
+    console.log("❌ Store not found:", shop);
+    return res.status(404).send("Store not found");
   }
 
-  console.log("🔥 WEBHOOK HIT:", data.title);
-
-  const shop = req.headers["x-shopify-shop-domain"];
+  console.log("✅ Store verified:", shop);
 
   await Product.findOneAndUpdate(
     { productId: data.id, shop },

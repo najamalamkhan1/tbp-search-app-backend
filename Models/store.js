@@ -3,15 +3,14 @@ const mongoose = require("mongoose");
 const storeSchema = new mongoose.Schema({
   domain: {
     type: String,
-    required: true, // abc.myshopify.com
+    required: true,
+    unique: true, // 🔥 IMPORTANT
   },
   accessToken: {
     type: String,
-    required: true, // shpat_xxx
+    required: true,
   },
-  shopName: {
-    type: String,
-  },
+  shopName: String,
   createdAt: {
     type: Date,
     default: Date.now,
