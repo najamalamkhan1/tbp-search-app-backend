@@ -30,24 +30,25 @@ router.post("/products/create", verifyShopifyWebhook, async (req, res) => {
 
 router.post("/products/update", verifyShopifyWebhook, async (req, res) => {
 
-  console.log("🔥 WEBHOOK HIT:", req.body.title); //debug
+  const data = JSON.parse(req.body.toString()); // ✅ FIX
+
+  console.log("🔥 WEBHOOK HIT:", data.title);
 
   const shop = req.headers["x-shopify-shop-domain"];
-  const product = req.body;
 
   await Product.findOneAndUpdate(
-    { productId: product.id, shop },
+    { productId: data.id, shop },
     {
       shop,
-      productId: product.id,
-      title: product.title,
-      description: product.body_html,
-      vendor: product.vendor,
-      productType: product.product_type,
-      tags: product.tags ? product.tags.split(",") : [],
-      price: parseFloat(product.variants?.[0]?.price || 0),
-      stock: product.variants?.[0]?.inventory_quantity || 0,
-      image: product.image?.src
+      productId: data.id,
+      title: data.title,
+      description: data.body_html,
+      vendor: data.vendor,
+      productType: data.product_type,
+      tags: data.tags ? data.tags.split(",") : [],
+      price: parseFloat(data.variants?.[0]?.price || 0),
+      stock: data.variants?.[0]?.inventory_quantity || 0,
+      image: data.image?.src
     },
     { upsert: true }
   );
