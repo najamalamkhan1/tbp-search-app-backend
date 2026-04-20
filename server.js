@@ -29,6 +29,7 @@ const searchRoute = require("./Routes/search");
 const storesRoute = require('./Routes/storeRoute')
 const analyticsRoute = require('./Routes/analyticsRoute')
 const settingsRoute = require('./Routes/settingsRoute')
+const authRoutes = require("./Routes/authRoutes");
 
 // routes
 app.use("/api", searchRoute);
@@ -37,6 +38,7 @@ app.use('/api', analyticsRoute)
 app.use('/api', settingsRoute)
 app.use("/api/", productsRoute);
 app.use("/webhooks", webhooks);
+app.use("/auth", authRoutes);
 
 app.get("/", (req, res) => {
   res.send("Backend Running Successfully✅");

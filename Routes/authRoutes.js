@@ -3,7 +3,7 @@ const router = express.Router();
 const fetch = require("node-fetch");
 
 
-router.get("/auth", (req, res) => {
+router.get("/", (req, res) => {
     const { shop } = req.query;
 
     const baseUrl = `${req.protocol}://${req.get("host")}`;
