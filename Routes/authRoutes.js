@@ -16,7 +16,7 @@ router.get("/", (req, res) => {
     res.redirect(installUrl);
 });
 
-router.get("/auth/callback", async (req, res) => {
+router.get("/callback", async (req, res) => {
   const { shop, code } = req.query;
 
   // 🔥 Access token exchange
