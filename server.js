@@ -7,8 +7,26 @@ const webhooks = require('./Routes/webhookRoutes');
 const app = express();
 
 app.use("/webhooks", express.raw({ type: "application/json" }));
-app.use(express.json());
-app.use(cors());
+const allowedOrigins = [
+  "https://admin.shopify.com",
+  "https://radical-deluxe-queensland-flavor.trycloudflare.com"
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+
+    if (
+      allowedOrigins.includes(origin) ||
+      origin.endsWith(".myshopify.com")
+    ) {
+      return callback(null, true);
+    }
+
+    return callback(new Error("Not allowed by CORS"));
+  },
+  credentials: true
+}));
 
 // MongoDB Connection
 mongoose.connect(
