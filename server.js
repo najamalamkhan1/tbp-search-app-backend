@@ -9,7 +9,7 @@ const app = express();
 app.use("/webhooks", express.raw({ type: "application/json" }));
 const allowedOrigins = [
   "https://admin.shopify.com",
-  " https://grip-ellen-daniel-pot.trycloudflare.com"
+  " https://cancelled-municipal-compounds-firm.trycloudflare.com"
 ];
 
 app.use(cors({
