@@ -6,10 +6,19 @@ const fetch = require("node-fetch");
 router.get("/", (req, res) => {
     const { shop } = req.query;
     
-    // ✅ hardcode Railway URL — req.protocol pe trust mat karo
+    // ✅ Yeh add karo debug ke liye
+    console.log("SHOP PARAM:", shop);
+    console.log("FULL QUERY:", req.query);
+    
+    if (!shop) {
+        return res.status(400).send("Shop param missing");
+    }
+    
     const baseUrl = process.env.HOST;
     const redirectUri = `${baseUrl}/auth/callback`;
     const installUrl = `https://${shop}/admin/oauth/authorize?client_id=${process.env.SHOPIFY_API_KEY}&scope=read_products,write_products&redirect_uri=${redirectUri}`;
+    
+    console.log("INSTALL URL:", installUrl);
     res.redirect(installUrl);
 });
 
