@@ -9,7 +9,7 @@ const app = express();
 app.use("/webhooks", express.raw({ type: "application/json" }));
 const allowedOrigins = [
   "https://admin.shopify.com",
-  "https://drum-willing-models-lightbox.trycloudflare.com/"
+  "https://internal-marketplace-favorites-geometry.trycloudflare.com"
 ];
 
 app.use(cors({
