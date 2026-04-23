@@ -54,7 +54,7 @@ router.get("/search", async (req, res) => {
             body: JSON.stringify({
   query: `
     {
-      products(first: 10, query: "title:*${query}* OR tag:*${query}*") {
+      products(first: 10, query: query: "${q}") {
         edges {
           node {
             id
