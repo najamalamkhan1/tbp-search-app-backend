@@ -7,7 +7,7 @@ const SHOPIFY_URL = `${process.env.SHOPIFY_STORE_URL}/api/graphql.json`;
 
 // POST /api/stores/add
 
-router.post("/api/stores/add", async (req, res) => {
+router.post("/stores/add", async (req, res) => {
   const { storeName, domain, accessToken } = req.body;
 
   try {
