@@ -52,34 +52,33 @@ router.get("/search", async (req, res) => {
               "Content-Type": "application/json",
             },
             body: JSON.stringify({
-              query: `
-  {
-    products(first: 10, sortKey: CREATED_AT, reverse: true, query: "${q}") {
-      edges {
-        node {
-          id
-          title
-          handle
-          createdAt
-          images(first: 1) {
-            edges {
-              node {
-                url
+  query: `
+    {
+      products(first: 10, query: "title:*${query}* OR tag:*${query}*") {
+        edges {
+          node {
+            id
+            title
+            handle
+            images(first: 1) {
+              edges {
+                node {
+                  src
+                }
               }
             }
-          }
-          variants(first: 1) {
-            edges {
-              node {
-                price 
+            variants(first: 1) {
+              edges {
+                node {
+                  price
+                }
               }
             }
           }
         }
       }
     }
-  }
-  `,
+  `
             }),
           }
         );
