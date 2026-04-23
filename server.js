@@ -7,6 +7,7 @@ const webhooks = require('./Routes/webhookRoutes');
 const app = express();
 
 app.use("/webhooks", express.raw({ type: "application/json" }));
+app.use(express.json());
 const allowedOrigins = [
   "https://admin.shopify.com",
   "https://twenty-journalists-antivirus-vitamin.trycloudflare.com"
