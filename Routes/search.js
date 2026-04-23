@@ -39,12 +39,11 @@ router.get("/search", async (req, res) => {
     }
 
     const stores = await Store.find();
-    console.log("STORES FROM DB:", stores);
 
     const promises = stores.map(async (store) => {
       try {
         const response = await fetch(
-          `https://${store.domain.replace(/\/$/, "")}/admin/api/2024-01/graphql.json`,
+          `https://${store.domain}/admin/api/2024-01/graphql.json`,
           {
             method: "POST",
             headers: {
@@ -52,54 +51,47 @@ router.get("/search", async (req, res) => {
               "Content-Type": "application/json",
             },
             body: JSON.stringify({
-  query: `
-    {
-      products(first: 10, query: query: "${q}") {
-        edges {
-          node {
-            id
-            title
-            handle
-            images(first: 1) {
-              edges {
-                node {
-                  src
+              query: `
+                {
+                  products(first: 10, query: "${q}") {
+                    edges {
+                      node {
+                        id
+                        title
+                        handle
+                        createdAt
+                        images(first: 1) {
+                          edges {
+                            node {
+                              src
+                            }
+                          }
+                        }
+                        variants(first: 1) {
+                          edges {
+                            node {
+                              price
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
                 }
-              }
-            }
-            variants(first: 1) {
-              edges {
-                node {
-                  price
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  `
+              `,
             }),
           }
         );
 
         const data = await response.json();
 
-        console.log("STORE:", store.domain);
-        console.log("SHOPIFY RESPONSE:", JSON.stringify(data, null, 2));
-
         return data?.data?.products?.edges?.map((item) => ({
           id: item.node.id,
           title: item.node.title,
           handle: item.node.handle,
           createdAt: item.node.createdAt,
-
-          // ✅ SAFE IMAGE
-          image: item.node.images?.edges?.[0]?.node?.url || "",
-
-          // ✅ CORRECT PRICE
-          price: item.node.variants?.edges?.[0]?.node?.price?.amount || "0",
-
+          image: item.node.images?.edges?.[0]?.node?.src || "",
+          price: item.node.variants?.edges?.[0]?.node?.price || "0",
           store: store.domain,
         })) || [];
 
@@ -110,17 +102,17 @@ router.get("/search", async (req, res) => {
     });
 
     const results = await Promise.all(promises);
-    const finalProducts = results.flat();
-    if (finalProducts.length === 0) {
+
+    const sorted = results
+      .flat()
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    if (sorted.length === 0) {
       await Analytics.create({
         type: "no_result",
         query: q,
       });
     }
-
-    const sorted = results
-      .flat()
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
     res.json({ products: sorted });
 
