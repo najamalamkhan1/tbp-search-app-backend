@@ -72,6 +72,16 @@ router.get("/store/", async (req, res) => {
   }
 });
 
+// Delete all Stores
+
+router.delete("/stores/delete-all", async (req, res) => {
+  try {
+    await Store.deleteMany({});
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ========================================
 // ✅ DELETE STORE
@@ -135,13 +145,5 @@ router.put("/store/:id", async (req, res) => {
   }
 });
 
-router.delete("/stores/delete-all", async (req, res) => {
-  try {
-    await Store.deleteMany({});
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
 module.exports = router;
