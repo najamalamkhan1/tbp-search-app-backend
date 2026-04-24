@@ -27,76 +27,89 @@ router.get("/search", async (req, res) => {
   try {
     const { q } = req.query;
 
-if (!q || !q.trim()) {
-  return res.json({ products: [] });
-}
+    if (!q || !q.trim()) {
+      return res.json({ products: [] });
+    }
 
-const searchQuery = q;
+    const searchQuery = q;
 
-const response = await fetch(
-  `https://${store.domain}/admin/api/2024-01/graphql.json`,
-  {
-    method: "POST",
-    headers: {
-      "X-Shopify-Access-Token": store.accessToken,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      query: `
-        {
-          products(first: 10, query: "title:*${searchQuery}* OR tag:*${searchQuery}*") {
-            edges {
-              node {
-                id
-                title
-                handle
-                createdAt
-                images(first: 1) {
-                  edges {
-                    node {
-                      url
+    // 🔥 DB se stores lo
+    const stores = await Store.find();
+
+    // 🔥 Har store par search run karo
+    const results = await Promise.all(
+      stores.map(async (store) => {
+        try {
+          const response = await fetch(
+            `https://${store.domain}/admin/api/2024-01/graphql.json`,
+            {
+              method: "POST",
+              headers: {
+                "X-Shopify-Access-Token": store.accessToken,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                query: `
+                {
+                  products(first: 10, query: "title:*${searchQuery}* OR tag:*${searchQuery}*") {
+                    edges {
+                      node {
+                        id
+                        title
+                        handle
+                        createdAt
+                        images(first: 1) {
+                          edges {
+                            node {
+                              url
+                            }
+                          }
+                        }
+                        variants(first: 1) {
+                          edges {
+                            node {
+                              price
+                            }
+                          }
+                        }
+                      }
                     }
                   }
                 }
-                variants(first: 1) {
-                  edges {
-                    node {
-                      price
-                    }
-                  }
-                }
-              }
+                `,
+              }),
             }
-          }
-        }
-      `,
-    }),
-  }
-);
+          );
 
           const data = await response.json();
 
-          return data?.data?.products?.edges?.map((item) => ({
-            id: item.node.id,
-            title: item.node.title,
-            handle: item.node.handle,
-            createdAt: item.node.createdAt,
-            image: item.node.images?.edges?.[0]?.node?.url || "",
-            price: item.node.variants?.edges?.[0]?.node?.price?.amount || "0",
-            store: store.domain,
-          })) || [];
+          return (
+            data?.data?.products?.edges?.map((item) => ({
+              id: item.node.id,
+              title: item.node.title,
+              handle: item.node.handle,
+              createdAt: item.node.createdAt,
+              image: item.node.images?.edges?.[0]?.node?.url || "",
+              price:
+                item.node.variants?.edges?.[0]?.node?.price || "0",
+              store: store.domain,
+            })) || []
+          );
 
         } catch (err) {
+          console.log("Store error:", store.domain, err.message);
           return [];
         }
       })
     );
 
+    // 🔥 flatten array
     const finalProducts = results.flat();
 
     res.json({ products: finalProducts });
 
   } catch (err) {
+    console.error("Search route error:", err);
     res.status(500).json({ error: err.message });
   }
 });
