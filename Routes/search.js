@@ -50,7 +50,7 @@ router.get("/search", async (req, res) => {
               body: JSON.stringify({
                 query: `
 {
-  products(first: 10, query: "${searchQuery}") {
+  products(first: 10, query: "title:*${searchQuery}*") {
     edges {
       node {
         id
@@ -85,7 +85,12 @@ router.get("/search", async (req, res) => {
           const data = await response.json();
 
           console.log("STORE:", store.domain);
-          console.log("RAW:", JSON.stringify(data));
+          console.log("TOKEN:", store.accessToken);
+
+          const text = await response.text();
+          console.log("RAW RESPONSE:", text);
+
+          const data = JSON.parse(text);
 
           if (!data?.data?.products?.edges) {
             return [];
