@@ -27,57 +27,52 @@ router.get("/search", async (req, res) => {
   try {
     const { q } = req.query;
 
-    if (!q || !q.trim()) {
-      return res.json({ products: [] });
-    }
+if (!q || !q.trim()) {
+  return res.json({ products: [] });
+}
 
-    const stores = await Store.find();
+const searchQuery = q;
 
-    const results = await Promise.all(
-      stores.map(async (store) => {
-        try {
-          const response = await fetch(
-            `https://${store.domain}/admin/api/2024-01/graphql.json`,
-            {
-              method: "POST",
-              headers: {
-                "X-Shopify-Access-Token": store.accessToken,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                query: `
-                  {
-                    products(first: 10, query: "title:*${q}* OR tag:*${q}*") {
-                      edges {
-                        node {
-                          id
-                          title
-                          handle
-                          createdAt
-                          images(first: 1) {
-                            edges {
-                              node {
-                                url
-                              }
-                            }
-                          }
-                          variants(first: 1) {
-                            edges {
-                              node {
-                                price {
-                                  amount
-                                }
-                              }
-                            }
-                          }
-                        }
-                      }
+const response = await fetch(
+  `https://${store.domain}/admin/api/2024-01/graphql.json`,
+  {
+    method: "POST",
+    headers: {
+      "X-Shopify-Access-Token": store.accessToken,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      query: `
+        {
+          products(first: 10, query: "title:*${searchQuery}* OR tag:*${searchQuery}*") {
+            edges {
+              node {
+                id
+                title
+                handle
+                createdAt
+                images(first: 1) {
+                  edges {
+                    node {
+                      url
                     }
                   }
-                `,
-              }),
+                }
+                variants(first: 1) {
+                  edges {
+                    node {
+                      price
+                    }
+                  }
+                }
+              }
             }
-          );
+          }
+        }
+      `,
+    }),
+  }
+);
 
           const data = await response.json();
 
