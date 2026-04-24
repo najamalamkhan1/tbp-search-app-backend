@@ -32,15 +32,19 @@ router.get("/search", async (req, res) => {
       return res.json({ products: [] });
     }
 
-    const searchQuery = q;
+    const searchQuery = q.trim();
 
     const stores = await Store.find();
 
     const results = await Promise.all(
       stores.map(async (store) => {
         try {
+          const cleanDomain = store.domain.trim();
+
+          console.log("🔍 STORE:", cleanDomain);
+
           const response = await fetch(
-            `https://${store.domain}/admin/api/2024-01/graphql.json`,
+            `https://${cleanDomain}/admin/api/2024-01/graphql.json`,
             {
               method: "POST",
               headers: {
@@ -49,65 +53,62 @@ router.get("/search", async (req, res) => {
               },
               body: JSON.stringify({
                 query: `
-{
-  products(first: 10, query: "title:*${searchQuery}*") {
-    edges {
-      node {
-        id
-        title
-        handle
-        createdAt
-        images(first: 1) {
-          edges {
-            node {
-              url
-            }
-          }
-        }
-        variants(first: 1) {
-          edges {
-            node {
-              price {
-                amount
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-`,
+                {
+                  products(first: 10, query: "title:*${searchQuery}*") {
+                    edges {
+                      node {
+                        id
+                        title
+                        handle
+                        createdAt
+                        images(first: 1) {
+                          edges {
+                            node {
+                              url
+                            }
+                          }
+                        }
+                        variants(first: 1) {
+                          edges {
+                            node {
+                              price {
+                                amount
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                `,
               }),
             }
           );
 
+          // ✅ ONLY ONE read
           const data = await response.json();
 
-          console.log("STORE:", store.domain);
-          console.log("TOKEN:", store.accessToken);
-
-          const text = await response.text();
-          console.log("RAW RESPONSE:", text);
-
-          const data = JSON.parse(text);
+          console.log("📦 RAW RESPONSE:", JSON.stringify(data, null, 2));
 
           if (!data?.data?.products?.edges) {
+            console.log("⚠️ No products found for:", cleanDomain);
             return [];
           }
 
           return data.data.products.edges.map((item) => ({
             id: item.node.id,
             title: item.node.title,
-            handle: item.node.handle,
+            handle: item.node.handle || "",
             createdAt: item.node.createdAt,
             image: item.node.images?.edges?.[0]?.node?.url || "",
             price:
               item.node.variants?.edges?.[0]?.node?.price?.amount || "0",
-            store: store.domain,
+            store: cleanDomain,
           }));
+
         } catch (err) {
-          console.log("ERROR STORE:", store.domain);
+          console.error("❌ STORE ERROR:", store.domain, err.message);
           return [];
         }
       })
@@ -115,9 +116,12 @@ router.get("/search", async (req, res) => {
 
     const finalProducts = results.flat();
 
+    console.log("✅ FINAL PRODUCTS:", finalProducts.length);
+
     res.json({ products: finalProducts });
+
   } catch (err) {
-    console.log("SERVER ERROR:", err);
+    console.error("🔥 SERVER ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 });
