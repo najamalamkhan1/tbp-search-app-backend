@@ -135,7 +135,7 @@ router.put("/store/:id", async (req, res) => {
   }
 });
 
-router.delete("/store/delete-all", async (req, res) => {
+router.delete("/stores/delete-all", async (req, res) => {
   try {
     await Store.deleteMany({});
     res.json({ success: true });
