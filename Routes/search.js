@@ -86,6 +86,7 @@ router.get("/search", async (req, res) => {
 
           console.log("STORE:", store.domain);
           console.log("RAW:", JSON.stringify(data));
+          alert('Something went wrong')
 
           if (!data?.data?.products?.edges) {
             return [];
