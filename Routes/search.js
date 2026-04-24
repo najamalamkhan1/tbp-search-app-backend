@@ -71,9 +71,7 @@ router.get("/search", async (req, res) => {
                         variants(first: 1) {
                           edges {
                             node {
-                              price {
-                                amount
-                              }
+                              price 
                             }
                           }
                         }
@@ -102,8 +100,7 @@ router.get("/search", async (req, res) => {
             handle: item.node.handle || "",
             createdAt: item.node.createdAt,
             image: item.node.images?.edges?.[0]?.node?.url || "",
-            price:
-              item.node.variants?.edges?.[0]?.node?.price?.amount || "0",
+            price: item.node.variants?.edges?.[0]?.node?.price || "0",
             store: cleanDomain,
           }));
 
