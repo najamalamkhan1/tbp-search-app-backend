@@ -47,35 +47,32 @@ router.get("/search", async (req, res) => {
               },
               body: JSON.stringify({
                 query: `
-{
-  products(first: 10, query: "${q}") {
-    edges {
-      node {
-        id
-        title
-        handle
-        createdAt
-        images(first: 1) {
-          edges {
-            node {
-              url
-            }
-          }
-        }
-        variants(first: 1) {
-          edges {
-            node {
-              price {
-                amount
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-`,
+                {
+                  products(first: 10, query: "${q}") {
+                    edges {
+                      node {
+                        id
+                        title
+                        handle
+                        images(first: 1) {
+                          edges {
+                            node {
+                              url
+                            }
+                          }
+                        }
+                        variants(first: 1) {
+                          edges {
+                            node {
+                              price   // ✅ FIXED (NO amount)
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                `,
               }),
             }
           );
@@ -90,20 +87,20 @@ router.get("/search", async (req, res) => {
             id: item.node.id,
             title: item.node.title,
             handle: item.node.handle,
-            createdAt: item.node.createdAt,
             image: item.node.images?.edges?.[0]?.node?.url || "",
-            price:
-              item.node.variants?.edges?.[0]?.node?.price?.amount || "0",
+            price: item.node.variants?.edges?.[0]?.node?.price || "0", // ✅ FIXED
             store: store.domain,
           }));
+
         } catch (err) {
-          console.log("ERROR STORE:", store.domain);
+          console.log("ERROR STORE:", store.domain, err.message);
           return [];
         }
       })
     );
 
     res.json({ products: results.flat() });
+
   } catch (err) {
     console.log("SERVER ERROR:", err);
     res.status(500).json({ error: err.message });
