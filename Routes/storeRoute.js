@@ -1,97 +1,90 @@
 const express = require("express");
 const router = express.Router();
 const Store = require("../Models/store");
-const mongoose = require('mongoose')
-
+const mongoose = require("mongoose");
 
 // ========================================
-// ✅ ADD STORE
+// ✅ ADD STORE (FIXED)
 // ========================================
-// router.post("/store/add", async (req, res) => {
-//   try {
-//     const { storeUrl, token } = req.body || {};
-
-//     if (!storeUrl || !token) {
-//       return res.status(400).json({ error: "Missing storeUrl or token" });
-//     }
-
-//     // 🔥 prevent duplicate store
-//     const existing = await Store.findOne({ storeUrl });
-
-//     if (existing) {
-//       return res.status(400).json({ error: "Store already exists" });
-//     }
-
-//     const newStore = new Store({
-//       storeUrl,
-//       token,
-//     });
-
-//     await newStore.save();
-
-//     res.json({ message: "Store added successfully", newStore });
-//   } catch (err) {
-//     res.status(500).json({ error: err.message });
-//   }
-// });
-
-// new api for store add
 router.post("/store/add", async (req, res) => {
   try {
     let { domain, accessToken } = req.body;
 
+    // ✅ validation
     if (!domain || !accessToken) {
-      return res.status(400).json({ error: "Missing fields" });
+      return res.status(400).json({
+        error: "Domain and accessToken are required",
+      });
     }
 
-    // clean domain
-    domain = domain.replace("https://", "");
+    // ✅ clean domain
+    domain = domain.replace("https://", "").trim();
 
+    // ✅ check duplicate
+    const existing = await Store.findOne({ domain });
+    if (existing) {
+      return res.status(400).json({
+        error: "Store already exists",
+      });
+    }
+
+    // ✅ create store
     const newStore = await Store.create({
       domain,
       accessToken,
     });
 
-    res.json({ success: true, store: newStore });
+    console.log("✅ STORE SAVED:", newStore);
+
+    res.json({
+      success: true,
+      store: newStore,
+    });
 
   } catch (err) {
+    console.error("ADD STORE ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
 
 // ========================================
-// ✅ GET ALL STORES
+// ✅ GET ALL STORES (FIXED)
 // ========================================
-router.get("/store/", async (req, res) => {
+router.get("/store", async (req, res) => {
   try {
-    const stores = await Store.find().select("domain");
+    const stores = await Store.find(); // 🔥 token bhi dikhega
+    console.log("📦 STORES:", stores);
+
     res.json(stores);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Delete all Stores
 
+// ========================================
+// ✅ DELETE ALL STORES
+// ========================================
 router.delete("/stores/delete-all", async (req, res) => {
   try {
     await Store.deleteMany({});
+    console.log("🗑️ ALL STORES DELETED");
+
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
+
 // ========================================
-// ✅ DELETE STORE
+// ✅ DELETE SINGLE STORE
 // ========================================
 router.delete("/store/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    console.log("REQ PARAM ID:", req.params.id);
 
-    // ✅ check valid Mongo ID
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ error: "Invalid ID format" });
     }
@@ -101,6 +94,8 @@ router.delete("/store/:id", async (req, res) => {
     if (!deleted) {
       return res.status(404).json({ error: "Store not found" });
     }
+
+    console.log("🗑️ STORE DELETED:", id);
 
     res.json({ message: "Store deleted successfully" });
 
@@ -112,21 +107,19 @@ router.delete("/store/:id", async (req, res) => {
 
 
 // ========================================
-// ✅ UPDATE STORE (BONUS 🔥)
+// ✅ UPDATE STORE
 // ========================================
 router.put("/store/:id", async (req, res) => {
   try {
     let { domain, accessToken } = req.body;
 
-    // ✅ validation
-    if (!domain?.trim() || !accessToken?.trim()) {
+    if (!domain || !accessToken) {
       return res.status(400).json({
-        error: "Domain and Access Token are required",
+        error: "Domain and accessToken required",
       });
     }
 
-    // ✅ clean domain
-    domain = domain.replace("https://", "");
+    domain = domain.replace("https://", "").trim();
 
     const updated = await Store.findByIdAndUpdate(
       req.params.id,
@@ -138,12 +131,13 @@ router.put("/store/:id", async (req, res) => {
       return res.status(404).json({ error: "Store not found" });
     }
 
+    console.log("✏️ STORE UPDATED:", updated);
+
     res.json(updated);
 
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
 
 module.exports = router;
