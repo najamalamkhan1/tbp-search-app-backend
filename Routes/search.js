@@ -32,82 +32,80 @@ router.get("/search", async (req, res) => {
       return res.json({ products: [] });
     }
 
-    const searchQuery = q.trim();
+    const stores = await Store.find();
 
-    // ❗ only ONE store
-    const store = await Store.findOne();
-
-    if (!store) {
-      return res.status(404).json({ error: "Store not found" });
-    }
-
-    const response = await fetch(
-      `https://${store.domain}/admin/api/2024-01/graphql.json`,
-      {
-        method: "POST",
-        headers: {
-          "X-Shopify-Access-Token": store.accessToken,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          query: `
-          {
-            products(first: 10) {
-              edges {
-                node {
-                  id
-                  title
-                  handle
-                  createdAt
-                  images(first: 1) {
-                    edges {
-                      node {
-                        url
-                      }
-                    }
-                  }
-                  variants(first: 1) {
-                    edges {
-                      node {
-                        price
-                      }
-                    }
-                  }
-                }
+    const results = await Promise.all(
+      stores.map(async (store) => {
+        try {
+          const response = await fetch(
+            `https://${store.domain}/admin/api/2024-01/graphql.json`,
+            {
+              method: "POST",
+              headers: {
+                "X-Shopify-Access-Token": store.accessToken,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                query: `
+{
+  products(first: 10, query: "${q}") {
+    edges {
+      node {
+        id
+        title
+        handle
+        createdAt
+        images(first: 1) {
+          edges {
+            node {
+              url
+            }
+          }
+        }
+        variants(first: 1) {
+          edges {
+            node {
+              price {
+                amount
               }
             }
           }
-          `,
-        }),
+        }
       }
-    );
-
-    const data = await response.json();
-
-    // ❗ handle errors
-    if (data.errors) {
-      console.error("SHOPIFY ERROR:", data.errors);
-      return res.json({ products: [] });
     }
+  }
+}
+`,
+              }),
+            }
+          );
 
-    const allProducts =
-      data?.data?.products?.edges?.map((item) => ({
-        id: item.node.id,
-        title: item.node.title,
-        handle: item.node.handle,
-        image: item.node.images?.edges?.[0]?.node?.url || "",
-        price: item.node.variants?.edges?.[0]?.node?.price || "0",
-      })) || [];
+          const data = await response.json();
 
-    // 🔥 LOCAL SEARCH (BEST PRACTICE)
-    const filtered = allProducts.filter((p) =>
-      p.title.toLowerCase().includes(searchQuery.toLowerCase())
+          console.log("SHOPIFY DATA:", JSON.stringify(data));
+
+          if (!data?.data?.products?.edges) return [];
+
+          return data.data.products.edges.map((item) => ({
+            id: item.node.id,
+            title: item.node.title,
+            handle: item.node.handle,
+            createdAt: item.node.createdAt,
+            image: item.node.images?.edges?.[0]?.node?.url || "",
+            price:
+              item.node.variants?.edges?.[0]?.node?.price?.amount || "0",
+            store: store.domain,
+          }));
+        } catch (err) {
+          console.log("ERROR STORE:", store.domain);
+          return [];
+        }
+      })
     );
 
-    res.json({ products: filtered });
-
+    res.json({ products: results.flat() });
   } catch (err) {
-    console.error("SERVER ERROR:", err);
+    console.log("SERVER ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 });
