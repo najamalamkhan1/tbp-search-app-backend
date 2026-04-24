@@ -34,91 +34,80 @@ router.get("/search", async (req, res) => {
 
     const searchQuery = q.trim();
 
-    const stores = await Store.find();
+    // ❗ only ONE store
+    const store = await Store.findOne();
 
-    const results = await Promise.all(
-      stores.map(async (store) => {
-        try {
-          const cleanDomain = store.domain.trim();
+    if (!store) {
+      return res.status(404).json({ error: "Store not found" });
+    }
 
-          console.log("🔍 STORE:", cleanDomain);
-
-          const response = await fetch(
-            `https://${cleanDomain}/admin/api/2024-01/graphql.json`,
-            {
-              method: "POST",
-              headers: {
-                "X-Shopify-Access-Token": store.accessToken,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                query: `
-                {
-                  products(first: 10, query:"${searchQuery}") {
+    const response = await fetch(
+      `https://${store.domain}/admin/api/2024-01/graphql.json`,
+      {
+        method: "POST",
+        headers: {
+          "X-Shopify-Access-Token": store.accessToken,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query: `
+          {
+            products(first: 10) {
+              edges {
+                node {
+                  id
+                  title
+                  handle
+                  createdAt
+                  images(first: 1) {
                     edges {
                       node {
-                        id
-                        title
-                        handle
-                        createdAt
-                        images(first: 1) {
-                          edges {
-                            node {
-                              url
-                            }
-                          }
-                        }
-                        variants(first: 1) {
-                          edges {
-                            node {
-                              price 
-                            }
-                          }
-                        }
+                        url
+                      }
+                    }
+                  }
+                  variants(first: 1) {
+                    edges {
+                      node {
+                        price
                       }
                     }
                   }
                 }
-                `,
-              }),
+              }
             }
-          );
-
-          // ✅ ONLY ONE read
-          const data = await response.json();
-
-          console.log("📦 RAW RESPONSE:", JSON.stringify(data, null, 2));
-
-          if (!data?.data?.products?.edges) {
-            console.log("⚠️ No products found for:", cleanDomain);
-            return [];
           }
-
-          return data.data.products.edges.map((item) => ({
-            id: item.node.id,
-            title: item.node.title,
-            handle: item.node.handle || "",
-            createdAt: item.node.createdAt,
-            image: item.node.images?.edges?.[0]?.node?.url || "",
-            price: item.node.variants?.edges?.[0]?.node?.price || "0",
-            store: cleanDomain,
-          }));
-
-        } catch (err) {
-          console.error("❌ STORE ERROR:", store.domain, err.message);
-          return [];
-        }
-      })
+          `,
+        }),
+      }
     );
 
-    const finalProducts = results.flat();
+    const data = await response.json();
 
-    console.log("✅ FINAL PRODUCTS:", finalProducts.length);
+    // ❗ handle errors
+    if (data.errors) {
+      console.error("SHOPIFY ERROR:", data.errors);
+      return res.json({ products: [] });
+    }
 
-    res.json({ products: finalProducts });
+    const allProducts =
+      data?.data?.products?.edges?.map((item) => ({
+        id: item.node.id,
+        title: item.node.title,
+        handle: item.node.handle,
+        image: item.node.images?.edges?.[0]?.node?.url || "",
+        price: item.node.variants?.edges?.[0]?.node?.price || "0",
+      })) || [];
+
+    // 🔥 LOCAL SEARCH (BEST PRACTICE)
+    const filtered = allProducts.filter((p) =>
+      p.title.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+
+    res.json({ products: filtered });
 
   } catch (err) {
-    console.error("🔥 SERVER ERROR:", err);
+    console.error("SERVER ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 });
