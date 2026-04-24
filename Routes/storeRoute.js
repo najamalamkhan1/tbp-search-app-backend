@@ -135,5 +135,9 @@ router.put("/store/:id", async (req, res) => {
   }
 });
 
+router.delete("/store/delete-all", async (req, res) => {
+  await Store.deleteMany({});
+  res.json({ success: true });
+});
 
 module.exports = router;
