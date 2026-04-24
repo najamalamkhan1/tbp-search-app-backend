@@ -48,39 +48,40 @@ router.get("/search", async (req, res) => {
               },
               body: JSON.stringify({
                 query: `
-                {
-                  products(first: 10) {
-                    edges {
-                      node {
-                        id
-                        title
-                        handle
-                        createdAt
-                        images(first: 1) {
-                          edges {
-                            node {
-                              url
-                            }
-                          }
-                        }
-                        variants(first: 1) {
-                          edges {
-                            node {
-                              price
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-                `,
+{
+  products(first: 10) {
+    edges {
+      node {
+        id
+        title
+        handle
+        createdAt
+        images(first: 1) {
+          edges {
+            node {
+              url
+            }
+          }
+        }
+        variants(first: 1) {
+          edges {
+            node {
+              price {
+                amount
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+`,
               }),
             }
           );
 
           const data = await response.json();
-
           return data?.data?.products?.edges?.map((item) => ({
             id: item.node.id,
             title: item.node.title,
@@ -91,6 +92,7 @@ router.get("/search", async (req, res) => {
               item.node.variants?.edges?.[0]?.node?.price?.amount || "0",
             store: store.domain,
           })) || [];
+          console.log("SHOPIFY RAW:", JSON.stringify(data));
         } catch (err) {
           console.log("ERROR STORE:", store.domain);
           return [];
