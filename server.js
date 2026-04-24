@@ -51,7 +51,7 @@ const settingsRoute = require('./Routes/settingsRoute')
 const authRoutes = require("./Routes/authRoutes");
 
 // routes
-app.use("/api", searchRoute);
+app.use("/api/search", searchRoute);
 app.use("/api", storesRoute);
 app.use('/api', analyticsRoute)
 app.use('/api', settingsRoute)

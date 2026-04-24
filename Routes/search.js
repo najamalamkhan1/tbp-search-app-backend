@@ -24,7 +24,7 @@ router.post("/stores/add", async (req, res) => {
   }
 });
 
-router.get("/search", async (req, res) => {
+router.get("/", async (req, res) => {
   try {
     const { q } = req.query;
 
