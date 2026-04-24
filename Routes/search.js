@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const fetch = require("node-fetch");
 const Store = require('../Models/store')
 const Analytics = require("../Models/analyticsModel");
 
@@ -49,7 +50,7 @@ router.get("/search", async (req, res) => {
               body: JSON.stringify({
                 query: `
 {
-  products(first: 10) {
+  products(first: 10, query: "${searchQuery}") {
     edges {
       node {
         id
@@ -82,7 +83,15 @@ router.get("/search", async (req, res) => {
           );
 
           const data = await response.json();
-          return data?.data?.products?.edges?.map((item) => ({
+
+          console.log("STORE:", store.domain);
+          console.log("RAW:", JSON.stringify(data));
+
+          if (!data?.data?.products?.edges) {
+            return [];
+          }
+
+          return data.data.products.edges.map((item) => ({
             id: item.node.id,
             title: item.node.title,
             handle: item.node.handle,
@@ -91,8 +100,7 @@ router.get("/search", async (req, res) => {
             price:
               item.node.variants?.edges?.[0]?.node?.price?.amount || "0",
             store: store.domain,
-          })) || [];
-          console.log("SHOPIFY RAW:", JSON.stringify(data));
+          }));
         } catch (err) {
           console.log("ERROR STORE:", store.domain);
           return [];
