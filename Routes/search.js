@@ -33,10 +33,8 @@ router.get("/search", async (req, res) => {
 
     const searchQuery = q;
 
-    // 🔥 DB se stores lo
     const stores = await Store.find();
 
-    // 🔥 Har store par search run karo
     const results = await Promise.all(
       stores.map(async (store) => {
         try {
@@ -83,33 +81,28 @@ router.get("/search", async (req, res) => {
 
           const data = await response.json();
 
-          return (
-            data?.data?.products?.edges?.map((item) => ({
-              id: item.node.id,
-              title: item.node.title,
-              handle: item.node.handle,
-              createdAt: item.node.createdAt,
-              image: item.node.images?.edges?.[0]?.node?.url || "",
-              price:
-                item.node.variants?.edges?.[0]?.node?.price || "0",
-              store: store.domain,
-            })) || []
-          );
-
+          return data?.data?.products?.edges?.map((item) => ({
+            id: item.node.id,
+            title: item.node.title,
+            handle: item.node.handle,
+            createdAt: item.node.createdAt,
+            image: item.node.images?.edges?.[0]?.node?.url || "",
+            price:
+              item.node.variants?.edges?.[0]?.node?.price?.amount || "0",
+            store: store.domain,
+          })) || [];
         } catch (err) {
-          console.log("Store error:", store.domain, err.message);
+          console.log("ERROR STORE:", store.domain);
           return [];
         }
       })
     );
 
-    // 🔥 flatten array
     const finalProducts = results.flat();
 
     res.json({ products: finalProducts });
-
   } catch (err) {
-    console.error("Search route error:", err);
+    console.log("SERVER ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 });
