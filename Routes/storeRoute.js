@@ -136,8 +136,12 @@ router.put("/store/:id", async (req, res) => {
 });
 
 router.delete("/store/delete-all", async (req, res) => {
-  await Store.deleteMany({});
-  res.json({ success: true });
+  try {
+    await Store.deleteMany({});
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;
