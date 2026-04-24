@@ -27,94 +27,79 @@ router.get("/search", async (req, res) => {
   try {
     const { q } = req.query;
 
-    if (q) {
-      await Analytics.create({
-        type: "search",
-        query: q,
-      });
-    }
-
     if (!q || !q.trim()) {
       return res.json({ products: [] });
     }
 
     const stores = await Store.find();
 
-    const promises = stores.map(async (store) => {
-      try {
-        const response = await fetch(
-          `https://${store.domain}/admin/api/2024-01/graphql.json`,
-          {
-            method: "POST",
-            headers: {
-              "X-Shopify-Access-Token": store.accessToken,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              query: `
-                {
-                  products(first: 10, query: "${q}") {
-                    edges {
-                      node {
-                        id
-                        title
-                        handle
-                        createdAt
-                        images(first: 1) {
-                          edges {
-                            node {
-                              src
+    const results = await Promise.all(
+      stores.map(async (store) => {
+        try {
+          const response = await fetch(
+            `https://${store.domain}/admin/api/2024-01/graphql.json`,
+            {
+              method: "POST",
+              headers: {
+                "X-Shopify-Access-Token": store.accessToken,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                query: `
+                  {
+                    products(first: 10, query: "title:*${q}* OR tag:*${q}*") {
+                      edges {
+                        node {
+                          id
+                          title
+                          handle
+                          createdAt
+                          images(first: 1) {
+                            edges {
+                              node {
+                                url
+                              }
                             }
                           }
-                        }
-                        variants(first: 1) {
-                          edges {
-                            node {
-                              price
+                          variants(first: 1) {
+                            edges {
+                              node {
+                                price {
+                                  amount
+                                }
+                              }
                             }
                           }
                         }
                       }
                     }
                   }
-                }
-              `,
-            }),
-          }
-        );
+                `,
+              }),
+            }
+          );
 
-        const data = await response.json();
+          const data = await response.json();
 
-        return data?.data?.products?.edges?.map((item) => ({
-          id: item.node.id,
-          title: item.node.title,
-          handle: item.node.handle,
-          createdAt: item.node.createdAt,
-          image: item.node.images?.edges?.[0]?.node?.src || "",
-          price: item.node.variants?.edges?.[0]?.node?.price || "0",
-          store: store.domain,
-        })) || [];
+          return data?.data?.products?.edges?.map((item) => ({
+            id: item.node.id,
+            title: item.node.title,
+            handle: item.node.handle,
+            createdAt: item.node.createdAt,
+            image: item.node.images?.edges?.[0]?.node?.url || "",
+            price: item.node.variants?.edges?.[0]?.node?.price?.amount || "0",
+            store: store.domain,
+          })) || [];
 
-      } catch (err) {
-        console.log("ERROR:", store.domain);
-        return [];
-      }
-    });
+        } catch (err) {
+          return [];
+        }
+      })
+    );
 
-    const results = await Promise.all(promises);
+    const finalProducts = results.flat();
 
-    const sorted = results
-      .flat()
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-    if (sorted.length === 0) {
-      await Analytics.create({
-        type: "no_result",
-        query: q,
-      });
-    }
-
-    res.json({ products: sorted });
+    res.json({ products: finalProducts });
 
   } catch (err) {
     res.status(500).json({ error: err.message });
