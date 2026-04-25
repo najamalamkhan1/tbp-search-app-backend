@@ -126,7 +126,7 @@ router.get("/trending", async (req, res) => {
             body: JSON.stringify({
               query: `
               {
-                products(first: 5, sortKey: CREATED_AT, reverse: true) {
+                products(first: 6, sortKey: CREATED_AT, reverse: true) {
                   edges {
                     node {
                       id
