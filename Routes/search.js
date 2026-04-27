@@ -26,83 +26,160 @@ router.post("/stores/add", async (req, res) => {
 
 router.get("/search", async (req, res) => {
   try {
-    const { q } = req.query;
+    const { q, shop } = req.query;
 
-    if (!q || !q.trim()) {
-      return res.json({ products: [] });
+    if (!q || !shop) {
+      return res.json({
+        products: [],
+        collections: [],
+        vendors: []
+      });
     }
 
+    // 👉 Sirf specific store fetch karo
+    const store = await Store.findOne({ domain: shop });
+
+    if (!store) {
+      return res.status(404).json({ error: "Store not found" });
+    }
+
+    const response = await fetch(
+      `https://${store.domain}/admin/api/2024-01/graphql.json`,
+      {
+        method: "POST",
+        headers: {
+          "X-Shopify-Access-Token": store.accessToken,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query: `
+          query {
+            products(first: 10, query: "${q}") {
+              edges {
+                node {
+                  title
+                  handle
+                  vendor
+                  images(first: 1) {
+                    edges {
+                      node { url }
+                    }
+                  }
+                  variants(first: 1) {
+                    edges {
+                      node { price }
+                    }
+                  }
+                }
+              }
+            }
+
+            collections(first: 5, query: "${q}") {
+              edges {
+                node {
+                  title
+                  handle
+                }
+              }
+            }
+          }
+          `,
+        }),
+      }
+    );
+
+    const data = await response.json();
+
+    const products =
+      data?.data?.products?.edges?.map(item => ({
+        title: item.node.title,
+        handle: item.node.handle,
+        vendor: item.node.vendor,
+        image: item.node.images?.edges?.[0]?.node?.url || "",
+        price: item.node.variants?.edges?.[0]?.node?.price || "0",
+      })) || [];
+
+    const collections =
+      data?.data?.collections?.edges?.map(c => ({
+        title: c.node.title,
+        handle: c.node.handle,
+      })) || [];
+
+    const vendors = [...new Set(products.map(p => p.vendor).filter(Boolean))];
+
+    res.json({
+      products,
+      collections,
+      vendors
+    });
+
+  } catch (err) {
+    console.log("SERVER ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get("/trending-brands", async (req, res) => {
+  try {
     const stores = await Store.find();
 
     const results = await Promise.all(
       stores.map(async (store) => {
-        try {
-          const response = await fetch(
-            `https://${store.domain}/admin/api/2024-01/graphql.json`,
-            {
-              method: "POST",
-              headers: {
-                "X-Shopify-Access-Token": store.accessToken,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                query: `
-                {
-                  products(first: 10, query: "${q}") {
-                    edges {
-                      node {
-                        id
-                        title
-                        handle
-                        images(first: 1) {
-                          edges {
-                            node {
-                              url
-                            }
-                          }
-                        }
-                        variants(first: 1) {
-                          edges {
-                            node {
-                              price
-                            }
-                          }
-                        }
+        const response = await fetch(
+          `https://${store.domain}/admin/api/2024-01/graphql.json`,
+          {
+            method: "POST",
+            headers: {
+              "X-Shopify-Access-Token": store.accessToken,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              query: `
+              {
+                products(first: 10) {
+                  edges {
+                    node {
+                      vendor
+                      title
+                      handle
+                      images(first:1){
+                        edges{node{url}}
+                      }
+                      variants(first:1){
+                        edges{node{price}}
                       }
                     }
                   }
                 }
-                `,
-              }),
-            }
-          );
+              }
+              `,
+            }),
+          }
+        );
 
-          const data = await response.json();
+        const data = await response.json();
 
-          console.log("SHOPIFY DATA:", JSON.stringify(data));
+        return data?.data?.products?.edges?.map(p => ({
+          title: p.node.title,
+          handle: p.node.handle,
+          vendor: p.node.vendor,
+          image: p.node.images?.edges?.[0]?.node?.url || "",
+          price: p.node.variants?.edges?.[0]?.node?.price || "0",
+        })) || [];
 
-          if (!data?.data?.products?.edges) return [];
-
-          return data.data.products.edges.map((item) => ({
-            id: item.node.id,
-            title: item.node.title,
-            handle: item.node.handle,
-            image: item.node.images?.edges?.[0]?.node?.url || "",
-            price: item.node.variants?.edges?.[0]?.node?.price || "0", // ✅ FIXED
-            store: store.domain,
-          }));
-
-        } catch (err) {
-          console.log("ERROR STORE:", store.domain, err.message);
-          return [];
-        }
       })
     );
 
-    res.json({ products: results.flat() });
+    const products = results.flat();
+
+    const brands = [...new Set(products.map(p => p.vendor).filter(Boolean))];
+
+    res.json({
+      products,
+      brands
+    });
 
   } catch (err) {
-    console.log("SERVER ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 });
