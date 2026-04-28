@@ -74,14 +74,17 @@ router.get("/search", async (req, res) => {
               }
             }
 
-            collections(first: 5, query: "${q}") {
-              edges {
-                node {
-                  title
-                  handle
-                }
-              }
-            }
+            collections(first: 5, sortKey: CREATED_AT, reverse: true) {
+    edges {
+      node {
+        id
+        title
+        handle
+        createdAt
+      }
+    }
+  }
+
           }
           `,
         }),
