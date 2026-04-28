@@ -28,7 +28,7 @@ router.get("/search", async (req, res) => {
   try {
     const { q, shop } = req.query;
 
-    if (!q || !shop) {
+    if (!shop) {
       return res.json({
         products: [],
         collections: [],
@@ -36,12 +36,14 @@ router.get("/search", async (req, res) => {
       });
     }
 
-    // 👉 Sirf specific store fetch karo
     const store = await Store.findOne({ domain: shop });
 
     if (!store) {
       return res.status(404).json({ error: "Store not found" });
     }
+
+    // 🔥 safer search query (partial match)
+    const searchQuery = q ? `title:*${q}*` : "";
 
     const response = await fetch(
       `https://${store.domain}/admin/api/2024-01/graphql.json`,
@@ -54,12 +56,18 @@ router.get("/search", async (req, res) => {
         body: JSON.stringify({
           query: `
           query {
-            products(first: 10, query: "${q}") {
+            products(
+              first: 10,
+              sortKey: CREATED_AT,
+              reverse: true,
+              ${q ? `query: "${searchQuery}"` : ""}
+            ) {
               edges {
                 node {
                   title
                   handle
                   vendor
+                  createdAt
                   images(first: 1) {
                     edges {
                       node { url }
@@ -74,17 +82,20 @@ router.get("/search", async (req, res) => {
               }
             }
 
-            collections(first: 5, sortKey: CREATED_AT, reverse: true) {
-    edges {
-      node {
-        id
-        title
-        handle
-        createdAt
-      }
-    }
-  }
-
+            collections(
+              first: 5,
+              sortKey: CREATED_AT,
+              reverse: true
+            ) {
+              edges {
+                node {
+                  id
+                  title
+                  handle
+                  createdAt
+                }
+              }
+            }
           }
           `,
         }),
@@ -93,6 +104,7 @@ router.get("/search", async (req, res) => {
 
     const data = await response.json();
 
+    // 🔥 products mapping
     const products =
       data?.data?.products?.edges?.map(item => ({
         title: item.node.title,
@@ -102,6 +114,7 @@ router.get("/search", async (req, res) => {
         price: item.node.variants?.edges?.[0]?.node?.price || "0",
       })) || [];
 
+    // 🔥 collections mapping
     const collections =
       data?.data?.collections?.edges?.map(c => ({
         title: c.node.title,
