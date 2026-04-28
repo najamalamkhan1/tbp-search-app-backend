@@ -53,47 +53,37 @@ router.get("/search", async (req, res) => {
         },
         body: JSON.stringify({
           query: `
-query {
-  products(
-    first: 10,
-    query: "${q}",
-    sortKey: CREATED_AT,
-    reverse: true
-  ) {
-    edges {
-      node {
-        title
-        handle
-        vendor
-        images(first: 1) {
-          edges {
-            node { url }
-          }
-        }
-        variants(first: 1) {
-          edges {
-            node { price }
-          }
-        }
-      }
-    }
-  }
+          query {
+            products(first: 10, query: "${q}") {
+              edges {
+                node {
+                  title
+                  handle
+                  vendor
+                  images(first: 1) {
+                    edges {
+                      node { url }
+                    }
+                  }
+                  variants(first: 1) {
+                    edges {
+                      node { price }
+                    }
+                  }
+                }
+              }
+            }
 
-  collections(
-    first: 5,
-    query: "${q}",
-    sortKey: CREATED_AT,
-    reverse: true
-  ) {
-    edges {
-      node {
-        title
-        handle
-      }
-    }
-  }
-}
-`,
+            collections(first: 5, query: "${q}") {
+              edges {
+                node {
+                  title
+                  handle
+                }
+              }
+            }
+          }
+          `,
         }),
       }
     );
