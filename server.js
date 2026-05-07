@@ -10,7 +10,8 @@ app.use("/webhooks", express.raw({ type: "application/json" }));
 app.use(express.json());
 const allowedOrigins = [
   "https://admin.shopify.com",
-  "https://tbp-search-app.tbp-search.workers.dev" // ✅ worker add
+  "https://tbp-search-app.tbp-search.workers.dev", // ✅ worker add
+  "https://cir-cumulative-simulations-fish.trycloudflare.com"
 ];
 
 app.use(cors({
