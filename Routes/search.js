@@ -28,7 +28,7 @@ router.post("/stores/add", async (req, res) => {
 
 router.get("/search", async (req, res) => {
   try {
-    const { q, shop } = req.query;
+    let { q, shop } = req.query;
 
     if (!q || !shop) {
       return res.json({
@@ -37,14 +37,16 @@ router.get("/search", async (req, res) => {
         vendors: []
       });
     }
+
+    // =========================
     // 🔥 APPLY SYNONYM
+    // =========================
     const synonymData = await Synonym.findOne({
       query: q,
       store: shop
     });
 
     if (synonymData && synonymData.synonyms.length > 0) {
-
       console.log("Original Query:", q);
 
       q = `${q} OR ${synonymData.synonyms[0]}`;
@@ -52,53 +54,35 @@ router.get("/search", async (req, res) => {
       console.log("Synonym Applied:", q);
     }
 
-    // 🔥 STEP 1: GET BOOSTS
+    // =========================
+    // 🔥 GET BOOSTS
+    // =========================
     const boosts = await Boost.find({
       query: {
-        $in: [req.query.q.toLowerCase(), q.toLowerCase()]
+        $in: [
+          req.query.q.toLowerCase(),
+          q.toLowerCase()
+        ]
       },
       store: shop
     });
 
-    // 🔥 STEP 2: CREATE IDS
     const boostedIds = boosts.map(b => b.productId);
 
-    // 🔥 STEP 3: PRODUCTS FETCH
-    let products = data?.data?.products?.edges?.map(item => ({
-      id: item.node.id,
-      title: item.node.title,
-      handle: item.node.handle,
-      vendor: item.node.vendor,
-      image: item.node.images?.edges?.[0]?.node?.url || "",
-      price: item.node.variants?.edges?.[0]?.node?.price || "0",
-    })) || [];
+    console.log("Boosted IDs:", boostedIds);
 
-    // 🔥 STEP 4: APPLY BOOST
-    if (boostedIds.length > 0) {
-
-      const boosted = [];
-      const normal = [];
-
-      for (let p of products) {
-
-        if (boostedIds.includes(p.id)) {
-          boosted.push(p);
-        } else {
-          normal.push(p);
-        }
-
-      }
-
-      products = [...boosted, ...normal];
-    }
-
-    // 👉 Sirf specific store fetch karo
+    // =========================
+    // 🔥 GET STORE
+    // =========================
     const store = await Store.findOne({ domain: shop });
 
     if (!store) {
       return res.status(404).json({ error: "Store not found" });
     }
 
+    // =========================
+    // 🔥 SHOPIFY API CALL
+    // =========================
     const response = await fetch(
       `https://${store.domain}/admin/api/2024-01/graphql.json`,
       {
@@ -113,7 +97,7 @@ router.get("/search", async (req, res) => {
             products(first: 10, query: "${q}") {
               edges {
                 node {
-                id   
+                  id
                   title
                   handle
                   vendor
@@ -147,9 +131,12 @@ router.get("/search", async (req, res) => {
 
     const data = await response.json();
 
-    const products =
+    // =========================
+    // 🔥 FORMAT PRODUCTS
+    // =========================
+    let products =
       data?.data?.products?.edges?.map(item => ({
-        id: item.node.id, // ✅ IMPORTANT
+        id: item.node.id,
         title: item.node.title,
         handle: item.node.handle,
         vendor: item.node.vendor,
@@ -157,35 +144,44 @@ router.get("/search", async (req, res) => {
         price: item.node.variants?.edges?.[0]?.node?.price || "0",
       })) || [];
 
+    // =========================
     // 🔥 APPLY BOOST SORTING
+    // =========================
     if (boostedIds.length > 0) {
-
-      console.log("Boosted IDs:", boostedIds);
 
       const boosted = [];
       const normal = [];
 
       for (let p of products) {
-
         if (boostedIds.includes(p.id)) {
           boosted.push(p);
         } else {
           normal.push(p);
         }
-
       }
 
       products = [...boosted, ...normal];
     }
 
+    // =========================
+    // 🔥 FORMAT COLLECTIONS
+    // =========================
     const collections =
       data?.data?.collections?.edges?.map(c => ({
         title: c.node.title,
         handle: c.node.handle,
       })) || [];
 
-    const vendors = [...new Set(products.map(p => p.vendor).filter(Boolean))];
+    // =========================
+    // 🔥 VENDORS
+    // =========================
+    const vendors = [
+      ...new Set(products.map(p => p.vendor).filter(Boolean))
+    ];
 
+    // =========================
+    // 🔥 RESPONSE
+    // =========================
     res.json({
       products,
       collections,
