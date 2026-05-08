@@ -1,5 +1,6 @@
 const Analytics = require("../Models/analyticsModel");
 const router = require("./search");
+const Click = require("../Models/Click");
 
 router.post("/analytics", async (req, res) => {
   try {
@@ -237,6 +238,38 @@ router.delete("/analytics/clear", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+router.post("/analytics/click", async (req, res) => {
+
+  const { productId, query, store } = req.body;
+
+  try {
+
+    let existing = await Click.findOne({
+      productId,
+      query,
+      store
+    });
+
+    if (existing) {
+      existing.count += 1;
+      await existing.save();
+    } else {
+      await Click.create({
+        productId,
+        query,
+        store,
+        count: 1
+      });
+    }
+
+    res.json({ success: true });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+
 });
 
 module.exports = router;
