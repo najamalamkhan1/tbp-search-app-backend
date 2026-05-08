@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const Boost = require("../models/Boost");
+const Boost = require("../Models/boostModel");
 
 router.post("/add", async (req, res) => {
 

@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const Synonym = require("../models/Synonym");
+const Synonym = require("../Models/synonymModel");
 
 // ADD SYNONYM
 router.post("/add", async (req, res) => {
