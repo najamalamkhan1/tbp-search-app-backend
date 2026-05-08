@@ -59,6 +59,13 @@ router.get("/search", async (req, res) => {
       },
       store: shop
     });
+    console.log("Search Query:", req.query.q);
+    console.log("Final Query:", q);
+    console.log("Boost Query Match:", [
+      req.query.q.toLowerCase(),
+      q.toLowerCase()
+    ]);
+    console.log("Boosted IDs:", boostedIds);
 
     const boostedIds = boosts.map(b => b.productId);
 
