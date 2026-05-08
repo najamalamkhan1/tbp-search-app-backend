@@ -90,7 +90,7 @@ router.get("/search", async (req, res) => {
         body: JSON.stringify({
           query: `
           query {
-            products(first: 10, query: "${q}") {
+            products(first: 20, sortKey: CREATED_AT, reverse: true, query: "${q}") {
               edges {
                 node {
                   id
