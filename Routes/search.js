@@ -43,9 +43,9 @@ router.get("/search", async (req, res) => {
     // 🔥 APPLY SYNONYM
     // =========================
     const synonymData = await Synonym.findOne({
-      query: q,
-      store: shop
-    });
+  query: q.toLowerCase(),
+  store: shop
+});
 
     if (synonymData && synonymData.synonyms.length > 0) {
       console.log("Original Query:", q);
