@@ -1,6 +1,6 @@
 const Analytics = require("../Models/analyticsModel");
 const router = require("./search");
-const Click = require("../Models/Click");
+const Click = require("../Models/clickModel");
 
 router.post("/analytics", async (req, res) => {
   try {
