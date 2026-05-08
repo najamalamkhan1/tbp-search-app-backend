@@ -29,6 +29,7 @@ router.post("/stores/add", async (req, res) => {
 router.get("/search", async (req, res) => {
   try {
     let { q, shop } = req.query;
+    const originalQuery = q.toLowerCase();
 
     if (!q || !shop) {
       return res.json({
