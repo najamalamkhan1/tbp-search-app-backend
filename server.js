@@ -11,7 +11,6 @@ app.use(express.json());
 const allowedOrigins = [
   "https://admin.shopify.com",
   "https://tbp-search-app.tbp-search.workers.dev", // ✅ worker add
-  "https://cir-cumulative-simulations-fish.trycloudflare.com"
 ];
 
 app.use(cors({
@@ -51,6 +50,9 @@ const storesRoute = require('./Routes/storeRoute')
 const analyticsRoute = require('./Routes/analyticsRoute')
 const settingsRoute = require('./Routes/settingsRoute')
 const authRoutes = require("./Routes/authRoutes");
+const synonymRoutes = require("./Routes/synonymRoute");
+const boostRoute = require("./Routes/boostRoute");
+
 
 // routes
 app.use("/api", searchRoute);
@@ -60,6 +62,8 @@ app.use('/api', settingsRoute)
 app.use("/api/", productsRoute);
 app.use("/webhooks", webhooks);
 app.use("/auth", authRoutes);
+app.use("/api/synonyms", synonymRoutes);
+app.use("/api/boost", boostRoute);
 
 app.get("/", (req, res) => {
     res.send("Backend Running Successfully✅");
