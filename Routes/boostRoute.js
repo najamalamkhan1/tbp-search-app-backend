@@ -21,4 +21,50 @@ router.post("/add", async (req, res) => {
   }
 });
 
+// =========================
+// 📋 LIST BOOSTS
+// =========================
+router.get("/list", async (req, res) => {
+  try {
+
+    const { store } = req.query;
+
+    const boosts = await Boost
+      .find({ store })
+      .sort({ createdAt: -1 });
+
+    res.json({
+      boosts
+    });
+
+  } catch (err) {
+
+    res.status(500).json({
+      error: err.message
+    });
+  }
+});
+
+// =========================
+// 🗑 DELETE BOOST
+// =========================
+router.delete("/delete/:id", async (req, res) => {
+  try {
+
+    await Boost.findByIdAndDelete(
+      req.params.id
+    );
+
+    res.json({
+      success: true
+    });
+
+  } catch (err) {
+
+    res.status(500).json({
+      error: err.message
+    });
+  }
+});
+
 module.exports = router;
