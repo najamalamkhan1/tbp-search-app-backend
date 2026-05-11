@@ -1,24 +1,91 @@
 const mongoose = require("mongoose");
 
-const productSchema = new mongoose.Schema({
-    shop: { type: String, required: true },
-    productId: String,
-    title: String,
-    description: String,
-    vendor: String,
-    productType: String,
-    tags: [String],
-    price: Number,
-    stock: Number,
-    image: String,
-}, { timestamps: true });
+const productSchema =
+  new mongoose.Schema({
 
-// ✅ TEXT SEARCH INDEX
+    store: {
+      type: String,
+      required: true,
+      index: true
+    },
+
+    productId: {
+      type: String,
+      required: true
+    },
+
+    title: {
+      type: String,
+      default: ""
+    },
+
+    handle: {
+      type: String,
+      default: ""
+    },
+
+    vendor: {
+      type: String,
+      default: "",
+      index: true
+    },
+
+    tags: {
+      type: [String],
+      default: []
+    },
+
+    image: {
+      type: String,
+      default: ""
+    },
+
+    price: {
+      type: String,
+      default: "0"
+    },
+
+    collections: {
+      type: [String],
+      default: []
+    },
+
+    status: {
+      type: String,
+      default: "ACTIVE",
+      index: true
+    },
+
+    searchableText: {
+      type: String,
+      default: ""
+    },
+
+  }, {
+    timestamps: true
+  });
+
+// 🔥 PREVENT DUPLICATES
 productSchema.index({
-    title: "text",
-    description: "text",
-    tags: "text",
-    vendor: "text"
+  store: 1,
+  productId: 1
+}, {
+  unique: true
 });
 
-module.exports = mongoose.model("Product", productSchema);
+// 🔥 TEXT SEARCH
+productSchema.index({
+  searchableText: "text"
+});
+
+// 🔥 FAST FILTERING
+productSchema.index({
+  store: 1,
+  vendor: 1
+});
+
+module.exports =
+  mongoose.model(
+    "Product",
+    productSchema
+  );

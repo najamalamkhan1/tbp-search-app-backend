@@ -29,7 +29,8 @@ router.post("/stores/add", async (req, res) => {
 router.get("/search", async (req, res) => {
   try {
     let { q, shop } = req.query;
-    const originalQuery = q.toLowerCase();
+    const originalQuery =
+  (q || "").toLowerCase();
 
     if (!q || !shop) {
       return res.json({
@@ -43,14 +44,14 @@ router.get("/search", async (req, res) => {
     // 🔥 APPLY SYNONYM
     // =========================
     const synonymData = await Synonym.findOne({
-  query: q.toLowerCase(),
-  store: shop
-});
+      query: q.toLowerCase(),
+      store: shop
+    });
 
     if (synonymData && synonymData.synonyms.length > 0) {
       console.log("Original Query:", q);
 
-      q = synonymData.synonyms[0];
+      q = `${q} OR ${synonymData.synonyms[0]}`;
 
       console.log("Synonym Applied:", q);
     }
@@ -90,7 +91,11 @@ router.get("/search", async (req, res) => {
         body: JSON.stringify({
           query: `
           query {
-            products(first: 20, sortKey: CREATED_AT, reverse: true, query: "${q}") {
+            products(
+  first: 20,
+  sortKey: RELEVANCE,
+  query: "status:active ${q}"
+) {
               edges {
                 node {
                   id
@@ -163,10 +168,28 @@ router.get("/search", async (req, res) => {
     // 🔥 FORMAT COLLECTIONS
     // =========================
     const collections =
-      data?.data?.collections?.edges?.map(c => ({
-        title: c.node.title,
-        handle: c.node.handle,
-      })) || [];
+      data?.data?.collections?.edges
+        ?.map(c => ({
+          title: c.node.title,
+          handle: c.node.handle,
+        }))
+        ?.filter(c => {
+          const title =
+            c.title.toLowerCase();
+
+          const query =
+            q.toLowerCase();
+
+          const vendorMatch =
+            vendors.some(v =>
+              title.includes(v.toLowerCase())
+            );
+
+          return (
+            title.includes(query) ||
+            vendorMatch
+          );
+        })
 
     // =========================
     // 🔥 VENDORS
