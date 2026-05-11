@@ -5,6 +5,7 @@ const Store = require('../Models/store')
 const Analytics = require("../Models/analyticsModel");
 const Synonym = require("../Models/synonymModel");
 const Boost = require("../Models/boostModel");
+const Product = require("../Models/productModel")
 
 const SHOPIFY_URL = `${process.env.SHOPIFY_STORE_URL}/api/graphql.json`;
 
