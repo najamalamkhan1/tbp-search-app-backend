@@ -27,12 +27,16 @@ router.post("/stores/add", async (req, res) => {
 });
 
 router.get("/search", async (req, res) => {
+
   try {
+
     let { q, shop } = req.query;
+
     const originalQuery =
-  (q || "").toLowerCase();
+      (q || "").toLowerCase().trim();
 
     if (!q || !shop) {
+
       return res.json({
         products: [],
         collections: [],
@@ -43,107 +47,127 @@ router.get("/search", async (req, res) => {
     // =========================
     // 🔥 APPLY SYNONYM
     // =========================
-    const synonymData = await Synonym.findOne({
-      query: q.toLowerCase(),
-      store: shop
-    });
+    const synonymData =
+      await Synonym.findOne({
+        query: originalQuery,
+        store: shop
+      });
 
-    if (synonymData && synonymData.synonyms.length > 0) {
-      console.log("Original Query:", q);
+    let finalQuery = originalQuery;
 
-      q = `${q} OR ${synonymData.synonyms[0]}`;
+    if (
+      synonymData &&
+      synonymData.synonyms?.length > 0
+    ) {
 
-      console.log("Synonym Applied:", q);
+      console.log(
+        "Original Query:",
+        originalQuery
+      );
+
+      finalQuery =
+        synonymData.synonyms[0]
+          .toLowerCase()
+          .trim();
+
+      console.log(
+        "Synonym Applied:",
+        finalQuery
+      );
     }
 
     // =========================
     // 🔥 GET BOOSTS
     // =========================
-    const boosts = await Boost.find({
-      query: originalQuery,
-      store: shop
-    });
+    const boosts =
+      await Boost.find({
+        query: originalQuery,
+        store: shop
+      });
 
-    const boostedIds = boosts.map(b => b.productId);
+    const boostedIds =
+      boosts.map(b => String(b.productId));
 
-    console.log("Boosted IDs:", boostedIds);
-
-    // =========================
-    // 🔥 GET STORE
-    // =========================
-    const store = await Store.findOne({ domain: shop });
-
-    if (!store) {
-      return res.status(404).json({ error: "Store not found" });
-    }
+    console.log(
+      "Boosted IDs:",
+      boostedIds
+    );
 
     // =========================
-    // 🔥 SHOPIFY API CALL
+    // 🔥 SEARCH PRODUCTS FROM DB
     // =========================
-    const response = await fetch(
-      `https://${store.domain}/admin/api/2024-01/graphql.json`,
-      {
-        method: "POST",
-        headers: {
-          "X-Shopify-Access-Token": store.accessToken,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          query: `
-          query {
-            products(
-  first: 20,
-  sortKey: RELEVANCE,
-  query: "status:active ${q}"
-) {
-              edges {
-                node {
-                  id
-                  title
-                  handle
-                  vendor
-                  images(first: 1) {
-                    edges {
-                      node { url }
-                    }
-                  }
-                  variants(first: 1) {
-                    edges {
-                      node { price }
-                    }
-                  }
-                }
+    let products =
+      await Product.find({
+
+        store: shop,
+
+        status: "ACTIVE",
+
+        $or: [
+
+          {
+            title: {
+              $regex: finalQuery,
+              $options: "i"
+            }
+          },
+
+          {
+            vendor: {
+              $regex: finalQuery,
+              $options: "i"
+            }
+          },
+
+          {
+            productType: {
+              $regex: finalQuery,
+              $options: "i"
+            }
+          },
+
+          {
+            tags: {
+              $elemMatch: {
+                $regex: finalQuery,
+                $options: "i"
               }
             }
+          },
 
-            collections(first: 5, query: "${q}") {
-              edges {
-                node {
-                  title
-                  handle
-                }
+          {
+            collections: {
+              $elemMatch: {
+                $regex: finalQuery,
+                $options: "i"
               }
             }
           }
-          `,
-        }),
-      }
-    );
 
-    const data = await response.json();
+        ]
+
+      })
+      .limit(20)
+      .lean();
 
     // =========================
     // 🔥 FORMAT PRODUCTS
     // =========================
-    let products =
-      data?.data?.products?.edges?.map(item => ({
-        id: item.node.id,
-        title: item.node.title,
-        handle: item.node.handle,
-        vendor: item.node.vendor,
-        image: item.node.images?.edges?.[0]?.node?.url || "",
-        price: item.node.variants?.edges?.[0]?.node?.price || "0",
-      })) || [];
+    products = products.map(p => ({
+
+      id: String(p.productId),
+
+      title: p.title,
+
+      handle: p.handle,
+
+      vendor: p.vendor,
+
+      image: p.image || "",
+
+      price: p.price || "0"
+
+    }));
 
     // =========================
     // 🔥 APPLY BOOST SORTING
@@ -154,62 +178,120 @@ router.get("/search", async (req, res) => {
       const normal = [];
 
       for (let p of products) {
-        if (boostedIds.includes(p.id)) {
+
+        if (
+          boostedIds.includes(
+            String(p.id)
+          )
+        ) {
+
           boosted.push(p);
+
         } else {
+
           normal.push(p);
         }
       }
 
-      products = [...boosted, ...normal];
+      products = [
+        ...boosted,
+        ...normal
+      ];
     }
-
-    // =========================
-    // 🔥 FORMAT COLLECTIONS
-    // =========================
-    const collections =
-      data?.data?.collections?.edges
-        ?.map(c => ({
-          title: c.node.title,
-          handle: c.node.handle,
-        }))
-        ?.filter(c => {
-          const title =
-            c.title.toLowerCase();
-
-          const query =
-            q.toLowerCase();
-
-          const vendorMatch =
-            vendors.some(v =>
-              title.includes(v.toLowerCase())
-            );
-
-          return (
-            title.includes(query) ||
-            vendorMatch
-          );
-        })
 
     // =========================
     // 🔥 VENDORS
     // =========================
     const vendors = [
-      ...new Set(products.map(p => p.vendor).filter(Boolean))
+
+      ...new Set(
+
+        products
+          .map(p => p.vendor)
+          .filter(Boolean)
+
+      )
+
     ];
+
+    // =========================
+    // 🔥 COLLECTIONS
+    // =========================
+    const collections = [
+
+      ...new Set(
+
+        (
+          await Product.find({
+
+            store: shop,
+
+            collections: {
+              $exists: true
+            }
+
+          }).lean()
+        )
+
+        .flatMap(
+          p => p.collections || []
+        )
+
+        .filter(c => {
+
+          const lower =
+            c.toLowerCase();
+
+          return (
+
+            lower.includes(finalQuery) ||
+
+            vendors.some(v =>
+              lower.includes(
+                v.toLowerCase()
+              )
+            )
+
+          );
+
+        })
+
+      )
+
+    ].slice(0, 5)
+      .map(c => ({
+
+        title: c,
+
+        handle: c
+          .toLowerCase()
+          .replace(/\s+/g, "-")
+
+      }));
 
     // =========================
     // 🔥 RESPONSE
     // =========================
     res.json({
+
       products,
+
       collections,
+
       vendors
+
     });
 
   } catch (err) {
-    console.log("SERVER ERROR:", err);
-    res.status(500).json({ error: err.message });
+
+    console.log(
+      "SERVER ERROR:",
+      err
+    );
+
+    res.status(500).json({
+      error: err.message
+    });
   }
 });
 
