@@ -276,7 +276,7 @@ router.get("/search", async (req, res) => {
             $meta: "textScore"
           },
 
-          createdAt: -1
+          shopifyCreatedAt: -1
 
         })
 

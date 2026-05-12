@@ -36,6 +36,10 @@ const collectionSchema =
             default: 0,
             index: true
         },
+        shopifyCreatedAt: {
+            type: Date,
+            index: true
+        },
 
         searchableText: {
             type: String,

@@ -168,47 +168,33 @@ router.post("/sync-products", async (req, res) => {
               update: {
 
                 $set: {
-
                   store: shop,
 
-                  productId: p.id,
+                  collectionId:
+                    String(c.id),
 
                   title:
-                    p.title || "",
+                    c.title || "",
 
                   handle:
-                    p.handle || "",
-
-                  vendor:
-                    p.vendor || "",
-
-                  productType:
-                    p.productType || "",
-
-                  tags:
-                    p.tags || [],
-
-                  collections,
+                    c.handle || "",
 
                   image:
-                    p.featuredImage
-                      ?.url || "",
+                    c.image?.src || "",
 
-                  price,
+                  productsCount:
+                    0,
 
-                  stock,
-
-                  status:
-                    p.status || "",
+                  shopifyCreatedAt:
+                    c.created_at,
 
                   searchableText: `
-                    ${p.title}
-                    ${p.vendor}
-                    ${(p.tags || [])
-                      .join(" ")}
-                    ${collections
-                      .join(" ")}
-                  `
+    ${c.title || ""}
+    ${c.handle || ""}
+  `
+                    .toLowerCase()
+                    .replace(/\s+/g, " ")
+                    .trim()
                 }
               },
 
