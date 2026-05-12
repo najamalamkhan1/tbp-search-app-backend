@@ -270,166 +270,170 @@ router.post("/sync-products", async (req, res) => {
   }
 });
 
-router.post(
-  "/sync-collections",
+router.post("/sync-collections", async (req, res) => {
 
-  async (req, res) => {
+  try {
 
-    try {
+    let { shop } = req.body;
 
-      const { shop } =
-        req.body;
+    if (!shop) {
 
-      if (!shop) {
+      return res.status(400).json({
+        error: "Shop required"
+      });
+    }
 
-        return res
-          .status(400)
-          .json({
-            error:
-              "Shop required"
-          });
-      }
+    shop = shop
+      .replace(/^https?:\/\//, "")
+      .replace(/\/$/, "")
+      .trim()
+      .toLowerCase();
 
-      const store =
-        await Store.findOne({
-          domain: shop
-        });
-
-      if (!store) {
-
-        return res
-          .status(404)
-          .json({
-            error:
-              "Store not found"
-          });
-      }
-
-      // =====================================
-      // SHOPIFY GRAPHQL
-      // =====================================
-      const response =
-        await fetch(
-          `https://${shop}/admin/api/2024-01/graphql.json`,
-          {
-            method: "POST",
-
-            headers: {
-              "Content-Type":
-                "application/json",
-
-              "X-Shopify-Access-Token":
-                store.accessToken
-            },
-
-            body: JSON.stringify({
-
-              query: `
-              {
-                collections(first: 250) {
-                  edges {
-                    node {
-                      id
-                      title
-                      handle
-
-                      image {
-                        url
-                      }
-
-                      productsCount {
-                        count
-                      }
-                    }
-                  }
-                }
-              }
-              `
-            })
-          }
-        );
-
-      const data =
-        await response.json();
-
-      const collections =
-        data?.data?.collections
-          ?.edges || [];
-
-      let synced = 0;
-
-      for (
-        const item of collections
-      ) {
-
-        const c =
-          item.node;
-
-        await Collection.findOneAndUpdate(
-
-          {
-            collectionId:
-              String(c.id),
-
-            store: shop
-          },
-
-          {
-            store: shop,
-
-            collectionId:
-              String(c.id),
-
-            title:
-              c.title || "",
-
-            handle:
-              c.handle || "",
-
-            image:
-              c.image?.url || "",
-
-            productsCount:
-              c.productsCount
-                ?.count || 0,
-
-            searchableText: `
-              ${c.title}
-              ${c.handle}
-            `.toLowerCase()
-
-          },
-
-          {
-            upsert: true
-          }
-        );
-
-        synced++;
-      }
-
-      res.json({
-
-        success: true,
-
-        synced
-
+    // =========================
+    // 🔥 GET STORE
+    // =========================
+    const store =
+      await Store.findOne({
+        domain: shop
       });
 
-    } catch (err) {
+    if (!store) {
 
-      console.log(
-        "COLLECTION SYNC ERROR:",
-        err
-      );
-
-      res.status(500)
-        .json({
-          error:
-            err.message
-        });
+      return res.status(404).json({
+        error: "Store not found"
+      });
     }
+
+    // =========================
+    // 🔥 FETCH CUSTOM COLLECTIONS
+    // =========================
+    const customResponse = await fetch(
+
+      `https://${shop}/admin/api/2024-01/custom_collections.json?limit=250`,
+
+      {
+        headers: {
+          "X-Shopify-Access-Token":
+            store.accessToken,
+          "Content-Type":
+            "application/json"
+        }
+      }
+    );
+
+    const customData =
+      await customResponse.json();
+
+    // =========================
+    // 🔥 FETCH SMART COLLECTIONS
+    // =========================
+    const smartResponse = await fetch(
+
+      `https://${shop}/admin/api/2024-01/smart_collections.json?limit=250`,
+
+      {
+        headers: {
+          "X-Shopify-Access-Token":
+            store.accessToken,
+          "Content-Type":
+            "application/json"
+        }
+      }
+    );
+
+    const smartData =
+      await smartResponse.json();
+
+    // =========================
+    // 🔥 MERGE COLLECTIONS
+    // =========================
+    const allCollections = [
+
+      ...(customData.custom_collections || []),
+
+      ...(smartData.smart_collections || [])
+
+    ];
+
+    console.log(
+      "TOTAL COLLECTIONS:",
+      allCollections.length
+    );
+
+    // =========================
+    // 🔥 FORMAT
+    // =========================
+    const formatted =
+      allCollections.map(c => ({
+
+        store: shop,
+
+        collectionId:
+          String(c.id),
+
+        title:
+          c.title || "",
+
+        handle:
+          c.handle || "",
+
+        image:
+          c.image?.src || "",
+
+        productsCount:
+          0,
+
+        searchableText: `
+
+          ${c.title || ""}
+
+          ${c.handle || ""}
+
+        `
+          .toLowerCase()
+          .replace(/\s+/g, " ")
+          .trim()
+
+      }));
+
+    // =========================
+    // 🔥 DELETE OLD
+    // =========================
+    await Collection.deleteMany({
+      store: shop
+    });
+
+    // =========================
+    // 🔥 INSERT NEW
+    // =========================
+    if (formatted.length > 0) {
+
+      await Collection.insertMany(
+        formatted,
+        { ordered: false }
+      );
+    }
+
+    res.json({
+
+      success: true,
+
+      synced:
+        formatted.length
+
+    });
+
+  } catch (err) {
+
+    console.log(
+      "COLLECTION SYNC ERROR:",
+      err
+    );
+
+    res.status(500).json({
+      error: err.message
+    });
   }
-);
+});
 
 module.exports = router;
