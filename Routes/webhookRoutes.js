@@ -1,79 +1,321 @@
 const express = require("express");
+
 const router = express.Router();
-const Store = require("../Models/store");
 
-const Product = require("../Models/productModel");
-const verifyShopifyWebhook = require("../middleware/verifyShopifyWebhook");
+const Product =
+  require("../Models/productModel");
 
-router.post("/products/create", verifyShopifyWebhook, async (req, res) => {
-  const shop = req.headers["x-shopify-shop-domain"];
-  const product = req.body;
+const Store =
+  require("../Models/store");
 
-  await Product.findOneAndUpdate(
-    { productId: product.id, shop },
-    {
-      shop,
-      productId: product.id,
-      title: product.title,
-      description: product.body_html,
-      vendor: product.vendor,
-      productType: product.product_type,
-      tags: product.tags ? product.tags.split(",") : [],
-      price: parseFloat(product.variants?.[0]?.price || 0),
-      stock: product.variants?.[0]?.inventory_quantity || 0,
-      image: product.image?.src
-    },
-    { upsert: true }
-  );
+const verifyShopifyWebhook =
+  require("../middleware/verifyShopifyWebhook");
 
-  res.status(200).send("OK");
-});
+// =====================================
+// CREATE PRODUCT
+// =====================================
+router.post(
+  "/products/create",
 
-router.post("/products/update", verifyShopifyWebhook, async (req, res) => {
+  verifyShopifyWebhook,
 
-  const data = JSON.parse(req.body.toString());
-  const shop = req.headers["x-shopify-shop-domain"];
+  async (req, res) => {
 
-  // 🔥 ADD THIS
-  const store = await Store.findOne({ domain: shop });
+    try {
 
-  if (!store) {
-    console.log("❌ Store not found:", shop);
-    return res.status(404).send("Store not found");
+      const product =
+        JSON.parse(
+          req.body.toString()
+        );
+
+      const shop =
+        req.headers[
+          "x-shopify-shop-domain"
+        ];
+
+      const store =
+        await Store.findOne({
+          domain: shop
+        });
+
+      if (!store) {
+
+        console.log(
+          "❌ Store not found:",
+          shop
+        );
+
+        return res
+          .status(404)
+          .send("Store not found");
+      }
+
+      const searchableText = `
+
+${product.title || ""}
+
+${product.vendor || ""}
+
+${product.product_type || ""}
+
+${product.tags || ""}
+
+      `.toLowerCase();
+
+      await Product.findOneAndUpdate(
+
+        {
+          productId:
+            String(product.id),
+
+          store: shop
+        },
+
+        {
+          store: shop,
+
+          productId:
+            String(product.id),
+
+          title:
+            product.title || "",
+
+          handle:
+            product.handle || "",
+
+          vendor:
+            product.vendor || "",
+
+          productType:
+            product.product_type || "",
+
+          tags:
+            product.tags
+              ? product.tags
+                  .split(",")
+                  .map(t => t.trim())
+              : [],
+
+          image:
+            product.image?.src || "",
+
+          price:
+            product.variants?.[0]
+              ?.price || "0",
+
+          status:
+            (
+              product.status ||
+              "active"
+            ).toUpperCase(),
+
+          searchableText,
+
+          updatedAt:
+            new Date()
+        },
+
+        {
+          upsert: true,
+          new: true
+        }
+      );
+
+      console.log(
+        "✅ PRODUCT CREATED:",
+        product.title
+      );
+
+      res.status(200).send("OK");
+
+    } catch (err) {
+
+      console.log(
+        "CREATE WEBHOOK ERROR:",
+        err
+      );
+
+      res.status(500).send("Error");
+    }
   }
+);
 
-  console.log("✅ Store verified:", shop);
+// =====================================
+// UPDATE PRODUCT
+// =====================================
+router.post(
+  "/products/update",
 
-  await Product.findOneAndUpdate(
-    { productId: data.id, shop },
-    {
-      shop,
-      productId: data.id,
-      title: data.title,
-      description: data.body_html,
-      vendor: data.vendor,
-      productType: data.product_type,
-      tags: data.tags ? data.tags.split(",") : [],
-      price: parseFloat(data.variants?.[0]?.price || 0),
-      stock: data.variants?.[0]?.inventory_quantity || 0,
-      image: data.image?.src
-    },
-    { upsert: true }
-  );
+  verifyShopifyWebhook,
 
-  res.status(200).send("OK");
-});
+  async (req, res) => {
 
-router.post("/products/delete", verifyShopifyWebhook, async (req, res) => {
-  const shop = req.headers["x-shopify-shop-domain"];
-  const product = req.body;
+    try {
 
-  await Product.findOneAndDelete({
-    productId: product.id,
-    shop
-  });
+      const product =
+        JSON.parse(
+          req.body.toString()
+        );
 
-  res.status(200).send("OK");
-});
+      const shop =
+        req.headers[
+          "x-shopify-shop-domain"
+        ];
+
+      const store =
+        await Store.findOne({
+          domain: shop
+        });
+
+      if (!store) {
+
+        console.log(
+          "❌ Store not found:",
+          shop
+        );
+
+        return res
+          .status(404)
+          .send("Store not found");
+      }
+
+      const searchableText = `
+
+${product.title || ""}
+
+${product.vendor || ""}
+
+${product.product_type || ""}
+
+${product.tags || ""}
+
+      `.toLowerCase();
+
+      await Product.findOneAndUpdate(
+
+        {
+          productId:
+            String(product.id),
+
+          store: shop
+        },
+
+        {
+          store: shop,
+
+          productId:
+            String(product.id),
+
+          title:
+            product.title || "",
+
+          handle:
+            product.handle || "",
+
+          vendor:
+            product.vendor || "",
+
+          productType:
+            product.product_type || "",
+
+          tags:
+            product.tags
+              ? product.tags
+                  .split(",")
+                  .map(t => t.trim())
+              : [],
+
+          image:
+            product.image?.src || "",
+
+          price:
+            product.variants?.[0]
+              ?.price || "0",
+
+          status:
+            (
+              product.status ||
+              "active"
+            ).toUpperCase(),
+
+          searchableText,
+
+          updatedAt:
+            new Date()
+        },
+
+        {
+          upsert: true,
+          new: true
+        }
+      );
+
+      console.log(
+        "♻️ PRODUCT UPDATED:",
+        product.title
+      );
+
+      res.status(200).send("OK");
+
+    } catch (err) {
+
+      console.log(
+        "UPDATE WEBHOOK ERROR:",
+        err
+      );
+
+      res.status(500).send("Error");
+    }
+  }
+);
+
+// =====================================
+// DELETE PRODUCT
+// =====================================
+router.post(
+  "/products/delete",
+
+  verifyShopifyWebhook,
+
+  async (req, res) => {
+
+    try {
+
+      const product =
+        JSON.parse(
+          req.body.toString()
+        );
+
+      const shop =
+        req.headers[
+          "x-shopify-shop-domain"
+        ];
+
+      await Product.findOneAndDelete({
+
+        productId:
+          String(product.id),
+
+        store: shop
+      });
+
+      console.log(
+        "🗑️ PRODUCT DELETED:",
+        product.id
+      );
+
+      res.status(200).send("OK");
+
+    } catch (err) {
+
+      console.log(
+        "DELETE WEBHOOK ERROR:",
+        err
+      );
+
+      res.status(500).send("Error");
+    }
+  }
+);
 
 module.exports = router;

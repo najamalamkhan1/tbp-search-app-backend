@@ -6,7 +6,11 @@ const webhooks = require('./Routes/webhookRoutes');
 
 const app = express();
 
-app.use("/webhooks", express.raw({ type: "application/json" }));
+app.use("/webhooks",
+  express.raw({
+    type: "*/*"
+  })
+);
 app.use(express.json());
 const allowedOrigins = [
   "https://admin.shopify.com",
@@ -40,15 +44,15 @@ app.use(cors({
 
 // MongoDB Connection
 mongoose.connect(
-    process.env.MONGO_DB_URI
+  process.env.MONGO_DB_URI
 )
 // database connect
 const db = mongoose.connection;
 db.on('error', (error) => {
-    console.log("Error Occured", error);
+  console.log("Error Occured", error);
 });
 db.once('connected', () => {
-    console.log('MongoDB connected');
+  console.log('MongoDB connected');
 })
 
 // Routes files import
@@ -74,9 +78,9 @@ app.use("/api/synonyms", synonymRoutes);
 app.use("/api/boost", boostRoute);
 
 app.get("/", (req, res) => {
-    res.send("Backend Running Successfully✅");
+  res.send("Backend Running Successfully✅");
 });
 
 app.listen(process.env.PORT || 3000, () => {
-    console.log(`Server running on port ${process.env.PORT}`);
+  console.log(`Server running on port ${process.env.PORT}`);
 });
