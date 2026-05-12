@@ -247,7 +247,7 @@ router.get("/search", async (req, res) => {
     // =========================
     // 🔥 COLLECTIONS
     // =========================
-    const collections =
+    let collections =
       await Collection.find(
 
         {
@@ -269,21 +269,38 @@ router.get("/search", async (req, res) => {
         }
 
       )
-
-        .sort({
-
-          score: {
-            $meta: "textScore"
-          },
-
-          shopifyCreatedAt: -1
-
-        })
-
-        .limit(10)
-
+        .limit(20)
         .lean();
 
+
+    // 🔥 NEWEST FIRST
+    collections.sort((a, b) => {
+
+      const aNew =
+        new Date(
+          a.shopifyCreatedAt || a.createdAt
+        ).getTime();
+
+      const bNew =
+        new Date(
+          b.shopifyCreatedAt || b.createdAt
+        ).getTime();
+
+      // ✅ NEW COLLECTION TOP
+      if (aNew !== bNew) {
+        return bNew - aNew;
+      }
+
+      // ✅ SAME DATE → RELEVANCE
+      return (
+        (b.score || 0) -
+        (a.score || 0)
+      );
+
+    });
+
+
+    // 🔥 FORMAT
     const formattedCollections =
       collections.map(c => ({
 

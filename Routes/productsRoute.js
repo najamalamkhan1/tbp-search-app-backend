@@ -385,65 +385,105 @@ router.post(
       );
 
       // =====================================
-      // FORMAT
+      // 🔥 BULK OPERATIONS
       // =====================================
-      const formatted =
+      const operations =
         allCollections.map(c => ({
 
-          store: shop,
+          updateOne: {
 
-          collectionId:
-            String(c.id),
+            filter: {
 
-          title:
-            c.title || "",
+              store: shop,
 
-          handle:
-            c.handle || "",
+              collectionId:
+                String(c.id)
 
-          image:
-            c.image?.src || "",
+            },
 
-          productsCount:
-            0,
+            update: {
 
-          searchableText: `
+              $set: {
 
-            ${c.title || ""}
+                store: shop,
 
-            ${c.handle || ""}
+                collectionId:
+                  String(c.id),
 
-          `
-            .toLowerCase()
-            .replace(/\s+/g, " ")
-            .trim()
+                title:
+                  c.title || "",
 
+                handle:
+                  c.handle || "",
+
+                image:
+                  c.image?.src || "",
+
+                productsCount:
+                  c.products_count || 0,
+
+                // 🔥 IMPORTANT
+                // latest ranking fix
+                shopifyCreatedAt:
+                  c.published_at ||
+                  c.updated_at ||
+                  c.created_at ||
+                  new Date(),
+
+                searchableText: `
+                  ${c.title || ""}
+                  ${c.handle || ""}
+                `
+                  .toLowerCase()
+                  .replace(/\s+/g, " ")
+                  .trim()
+              }
+            },
+
+            upsert: true
+          }
         }));
 
       // =====================================
-      // DELETE OLD
+      // 🔥 SAVE COLLECTIONS
       // =====================================
-      await Collection.deleteMany({
-        store: shop
-      });
+      if (operations.length > 0) {
 
-      // =====================================
-      // INSERT NEW
-      // =====================================
-      if (formatted.length > 0) {
-
-        await Collection.insertMany(
-          formatted,
-          { ordered: false }
+        await Collection.bulkWrite(
+          operations,
+          {
+            ordered: false
+          }
         );
       }
 
+      // =====================================
+      // 🔥 DELETE REMOVED COLLECTIONS
+      // =====================================
+      const collectionIds =
+        allCollections.map(c =>
+          String(c.id)
+        );
+
+      await Collection.deleteMany({
+
+        store: shop,
+
+        collectionId: {
+          $nin: collectionIds
+        }
+
+      });
+
+      // =====================================
+      // ✅ DONE
+      // =====================================
       res.json({
 
         success: true,
 
         synced:
-          formatted.length
+          allCollections.length
 
       });
 
