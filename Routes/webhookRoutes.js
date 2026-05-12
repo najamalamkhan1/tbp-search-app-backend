@@ -34,7 +34,7 @@ router.post(
 
       const shop =
         req.headers[
-          "x-shopify-shop-domain"
+        "x-shopify-shop-domain"
         ];
 
       const store =
@@ -96,8 +96,8 @@ ${product.tags || ""}
           tags:
             product.tags
               ? product.tags
-                  .split(",")
-                  .map(t => t.trim())
+                .split(",")
+                .map(t => t.trim())
               : [],
 
           image:
@@ -121,7 +121,7 @@ ${product.tags || ""}
 
         {
           upsert: true,
-          new: true
+          returnDocument: "after"
         }
       );
 
@@ -163,7 +163,7 @@ router.post(
 
       const shop =
         req.headers[
-          "x-shopify-shop-domain"
+        "x-shopify-shop-domain"
         ];
 
       const store =
@@ -225,8 +225,8 @@ ${product.tags || ""}
           tags:
             product.tags
               ? product.tags
-                  .split(",")
-                  .map(t => t.trim())
+                .split(",")
+                .map(t => t.trim())
               : [],
 
           image:
@@ -292,7 +292,7 @@ router.post(
 
       const shop =
         req.headers[
-          "x-shopify-shop-domain"
+        "x-shopify-shop-domain"
         ];
 
       await Product.findOneAndDelete({
