@@ -1,5 +1,4 @@
 const express = require("express");
-
 const router = express.Router();
 
 const Collection =
@@ -9,7 +8,7 @@ const verifyShopifyWebhook =
   require("../middleware/verifyShopifyWebhook");
 
 // =====================================
-// CREATE
+// CREATE COLLECTION
 // =====================================
 router.post(
   "/collections/create",
@@ -18,20 +17,18 @@ router.post(
 
     try {
 
-      const data =
-        JSON.parse(req.body.toString());
-
       const shop =
         req.headers[
           "x-shopify-shop-domain"
         ];
 
+      const data =
+        JSON.parse(req.body.toString());
+
       await Collection.findOneAndUpdate(
 
         {
-          collectionId:
-            String(data.id),
-
+          collectionId: String(data.id),
           store: shop
         },
 
@@ -50,18 +47,16 @@ router.post(
           image:
             data.image?.src || "",
 
-          productsCount:
-            data.products_count || 0,
-
           searchableText: `
-            ${data.title}
-            ${data.handle}
+            ${data.title || ""}
+            ${data.handle || ""}
           `.toLowerCase()
+
         },
 
         {
           upsert: true,
-          returnDocument: "after"
+          new: true
         }
       );
 
@@ -74,7 +69,10 @@ router.post(
 
     } catch (err) {
 
-      console.log(err);
+      console.log(
+        "COLLECTION CREATE ERROR:",
+        err
+      );
 
       res.status(500).send("ERROR");
     }
@@ -82,7 +80,7 @@ router.post(
 );
 
 // =====================================
-// UPDATE
+// UPDATE COLLECTION
 // =====================================
 router.post(
   "/collections/update",
@@ -91,20 +89,18 @@ router.post(
 
     try {
 
-      const data =
-        JSON.parse(req.body.toString());
-
       const shop =
         req.headers[
           "x-shopify-shop-domain"
         ];
 
+      const data =
+        JSON.parse(req.body.toString());
+
       await Collection.findOneAndUpdate(
 
         {
-          collectionId:
-            String(data.id),
-
+          collectionId: String(data.id),
           store: shop
         },
 
@@ -123,23 +119,21 @@ router.post(
           image:
             data.image?.src || "",
 
-          productsCount:
-            data.products_count || 0,
-
           searchableText: `
-            ${data.title}
-            ${data.handle}
+            ${data.title || ""}
+            ${data.handle || ""}
           `.toLowerCase()
+
         },
 
         {
           upsert: true,
-          returnDocument: "after"
+          new: true
         }
       );
 
       console.log(
-        "✅ COLLECTION UPDATED:",
+        "♻️ COLLECTION UPDATED:",
         data.title
       );
 
@@ -147,7 +141,10 @@ router.post(
 
     } catch (err) {
 
-      console.log(err);
+      console.log(
+        "COLLECTION UPDATE ERROR:",
+        err
+      );
 
       res.status(500).send("ERROR");
     }
@@ -155,7 +152,7 @@ router.post(
 );
 
 // =====================================
-// DELETE
+// DELETE COLLECTION
 // =====================================
 router.post(
   "/collections/delete",
@@ -164,13 +161,13 @@ router.post(
 
     try {
 
-      const data =
-        JSON.parse(req.body.toString());
-
       const shop =
         req.headers[
           "x-shopify-shop-domain"
         ];
+
+      const data =
+        JSON.parse(req.body.toString());
 
       await Collection.findOneAndDelete({
 
@@ -189,7 +186,10 @@ router.post(
 
     } catch (err) {
 
-      console.log(err);
+      console.log(
+        "COLLECTION DELETE ERROR:",
+        err
+      );
 
       res.status(500).send("ERROR");
     }

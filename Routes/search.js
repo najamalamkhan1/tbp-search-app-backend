@@ -6,6 +6,7 @@ const Analytics = require("../Models/analyticsModel");
 const Synonym = require("../Models/synonymModel");
 const Boost = require("../Models/boostModel");
 const Product = require("../Models/productModel")
+const Collection = require("../Models/collectionModel");
 
 const SHOPIFY_URL = `${process.env.SHOPIFY_STORE_URL}/api/graphql.json`;
 
@@ -246,62 +247,39 @@ router.get("/search", async (req, res) => {
     // =========================
     // 🔥 COLLECTIONS
     // =========================
-    const collectionDocs =
-      await Product.find({
+    const Collection =
+      require("../Models/collectionModel");
+
+    const collections =
+      await Collection.find({
 
         store: shop,
 
-        collections: {
-          $exists: true,
-          $ne: []
+        title: {
+          $regex: finalQuery,
+          $options: "i"
         }
 
       })
 
-        .select("collections")
+        // 🔥 NEWEST FIRST
+        .sort({
+          createdAt: -1
+        })
+
+        // 🔥 LIMIT
+        .limit(5)
 
         .lean();
 
-    const collections = [
+    const formattedCollections =
+      collections.map(c => ({
 
-      ...new Set(
+        title: c.title,
 
-        collectionDocs.flatMap(
-          p => p.collections || []
-        )
+        handle: c.handle,
 
-      )
-
-    ]
-
-      .filter(c => {
-
-        const lower =
-          c.toLowerCase();
-
-        return (
-
-          lower.includes(finalQuery) ||
-
-          vendors.some(v =>
-            lower.includes(
-              v.toLowerCase()
-            )
-          )
-
-        );
-      })
-
-      // 🔥 LIMIT
-      .slice(0, 5)
-
-      .map(c => ({
-
-        title: c,
-
-        handle:
-          c.toLowerCase()
-            .replace(/\s+/g, "-")
+        image: c.image || ""
 
       }));
 
@@ -312,7 +290,8 @@ router.get("/search", async (req, res) => {
 
       products,
 
-      collections,
+      collections:
+        formattedCollections,
 
       vendors
 
