@@ -301,12 +301,13 @@ router.post(
       let allCollections = [];
 
       // =====================================
-      // FETCH FUNCTION
+      // 🔥 FETCH FUNCTION
       // =====================================
       const fetchCollections =
         async (type) => {
 
           let since_id = 0;
+
           let hasMore = true;
 
           while (hasMore) {
@@ -318,6 +319,7 @@ router.post(
 
                 {
                   headers: {
+
                     "X-Shopify-Access-Token":
                       store.accessToken,
 
@@ -351,6 +353,7 @@ router.post(
             ) {
 
               hasMore = false;
+
               break;
             }
 
@@ -366,14 +369,14 @@ router.post(
         };
 
       // =====================================
-      // CUSTOM COLLECTIONS
+      // 🔥 CUSTOM COLLECTIONS
       // =====================================
       await fetchCollections(
         "custom_collections"
       );
 
       // =====================================
-      // SMART COLLECTIONS
+      // 🔥 SMART COLLECTIONS
       // =====================================
       await fetchCollections(
         "smart_collections"
@@ -385,76 +388,20 @@ router.post(
       );
 
       // =====================================
-      // 🔥 FILTER COLLECTIONS
-      // ONLY ACTIVE PRODUCTS COLLECTIONS
+      // 🔥 ONLY COLLECTIONS
+      // WITH PRODUCTS
       // =====================================
+      const filteredCollections =
+        allCollections.filter(c =>
 
-      const filteredCollections = [];
+          (c.products_count || 0) > 0
 
-      for (const c of allCollections) {
+        );
 
-        try {
-
-          const response = await fetch(
-            `https://${shop}/admin/api/2025-01/graphql.json`,
-            {
-              method: "POST",
-
-              headers: {
-                "X-Shopify-Access-Token":
-                  store.accessToken,
-
-                "Content-Type":
-                  "application/json"
-              },
-
-              body: JSON.stringify({
-                query: `
-          query {
-
-            collection(
-              id: "gid://shopify/Collection/${c.id}"
-            ) {
-
-              products(
-                first: 1,
-                query: "status:active"
-              ) {
-
-                edges {
-                  node {
-                    id
-                  }
-                }
-              }
-            }
-          }
-          `
-              })
-            }
-          );
-
-          const data =
-            await response.json();
-
-          const activeProducts =
-            data?.data?.collection
-              ?.products?.edges || [];
-
-          // ✅ ONLY SAVE IF ACTIVE PRODUCT EXISTS
-          if (activeProducts.length > 0) {
-
-            filteredCollections.push(c);
-          }
-
-        } catch (err) {
-
-          console.log(
-            "COLLECTION FILTER ERROR:",
-            err.message
-          );
-        }
-      }
+      console.log(
+        "FILTERED COLLECTIONS:",
+        filteredCollections.length
+      );
 
       // =====================================
       // 🔥 BULK OPERATIONS
@@ -494,6 +441,8 @@ router.post(
                 productsCount:
                   c.products_count || 0,
 
+                // 🔥 IMPORTANT
+                // latest ranking fix
                 shopifyCreatedAt:
                   c.published_at ||
                   c.updated_at ||
@@ -501,9 +450,9 @@ router.post(
                   new Date(),
 
                 searchableText: `
-            ${c.title || ""}
-            ${c.handle || ""}
-          `
+                  ${c.title || ""}
+                  ${c.handle || ""}
+                `
                   .toLowerCase()
                   .replace(/\s+/g, " ")
                   .trim()
@@ -528,10 +477,11 @@ router.post(
       }
 
       // =====================================
-      // 🔥 DELETE REMOVED COLLECTIONS
+      // 🔥 DELETE REMOVED
+      // COLLECTIONS
       // =====================================
       const collectionIds =
-        allCollections.map(c =>
+        filteredCollections.map(c =>
           String(c.id)
         );
 
@@ -552,7 +502,8 @@ router.post(
 
         success: true,
 
-        synced: filteredCollections.length
+        synced:
+          filteredCollections.length
 
       });
 
