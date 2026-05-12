@@ -64,6 +64,7 @@ const settingsRoute = require('./Routes/settingsRoute')
 const authRoutes = require("./Routes/authRoutes");
 const synonymRoutes = require("./Routes/synonymRoute");
 const boostRoute = require("./Routes/boostRoute");
+const collectionWebhookRoutes = require("./Routes/collectionWebhookRoutes");
 
 
 // routes
@@ -73,6 +74,7 @@ app.use('/api', analyticsRoute)
 app.use('/api', settingsRoute)
 app.use("/api/", productsRoute);
 app.use("/webhooks", webhooks);
+app.use("/webhooks", collectionWebhookRoutes);
 app.use("/auth", authRoutes);
 app.use("/api/synonyms", synonymRoutes);
 app.use("/api/boost", boostRoute);
