@@ -10,23 +10,54 @@ const verifyShopifyWebhook = (
 
     const hmac =
       req.headers[
-      "x-shopify-hmac-sha256"
+        "x-shopify-hmac-sha256"
       ];
 
+    // ✅ DEBUG
     console.log(
       "IS BUFFER:",
       Buffer.isBuffer(req.body)
     );
 
-    const hash = crypto
+    if (!hmac) {
+
+      console.log(
+        "❌ Missing HMAC Header"
+      );
+
+      return res
+        .status(401)
+        .send("Missing HMAC");
+    }
+
+    // ✅ USE SHOPIFY APP SECRET
+    const generatedHash = crypto
       .createHmac(
         "sha256",
-        process.env.SHOPIFY_WEBHOOK_SECRET
+        process.env.SHOPIFY_API_SECRET
       )
       .update(req.body)
       .digest("base64");
 
-    if (hash !== hmac) {
+    // ✅ DEBUG
+    console.log(
+      "SHOPIFY HMAC:",
+      hmac
+    );
+
+    console.log(
+      "GENERATED HMAC:",
+      generatedHash
+    );
+
+    // ✅ SAFE COMPARE
+    const isValid =
+      crypto.timingSafeEqual(
+        Buffer.from(generatedHash),
+        Buffer.from(hmac)
+      );
+
+    if (!isValid) {
 
       console.log(
         "❌ HMAC FAILED"
