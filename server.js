@@ -8,26 +8,44 @@ const app = express();
 
 app.use("/webhooks", express.raw({ type: "application/json" }));
 app.use(express.json());
-const allowedOrigins = [
-  "https://admin.shopify.com",
-  "https://tbp-search-app.tbp-search.workers.dev", // ✅ worker add
-];
 
 app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin) return callback(null, true);
+  origin: (origin, callback) => {
 
+    // ✅ allow server-to-server / postman / worker
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    // ✅ Shopify Admin
+    if (origin.includes("shopify.com")) {
+      return callback(null, true);
+    }
+
+    // ✅ Shopify Stores
+    if (origin.includes(".myshopify.com")) {
+      return callback(null, true);
+    }
+
+    // ✅ Cloudflare tunnels
+    if (origin.includes(".trycloudflare.com")) {
+      return callback(null, true);
+    }
+
+    // ✅ Your worker
     if (
-      allowedOrigins.includes(origin) ||
-      origin.endsWith(".myshopify.com") ||
-      origin.includes(".trycloudflare.com")
+      origin ===
+      "https://tbp-search-app.tbp-search.workers.dev"
     ) {
       return callback(null, true);
     }
 
-    return callback(new Error("Not allowed by CORS"));
+    console.log("BLOCKED ORIGIN:", origin);
+
+    return callback(null, true); // 🔥 TEMPORARY allow all
   },
-  credentials: true
+
+  credentials: true,
 }));
 
 // MongoDB Connection
