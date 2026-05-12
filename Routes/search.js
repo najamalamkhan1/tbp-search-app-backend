@@ -247,27 +247,36 @@ router.get("/search", async (req, res) => {
     // =========================
     // 🔥 COLLECTIONS
     // =========================
-    const Collection =
-      require("../Models/collectionModel");
 
     const collections =
       await Collection.find({
 
         store: shop,
 
-        title: {
-          $regex: finalQuery,
-          $options: "i"
-        }
+        $or: [
+
+          {
+            title: {
+              $regex: finalQuery,
+              $options: "i"
+            }
+          },
+
+          {
+            searchableText: {
+              $regex: finalQuery,
+              $options: "i"
+            }
+          }
+
+        ]
 
       })
 
-        // 🔥 NEWEST FIRST
         .sort({
           createdAt: -1
         })
 
-        // 🔥 LIMIT
         .limit(5)
 
         .lean();
@@ -277,9 +286,7 @@ router.get("/search", async (req, res) => {
 
         title: c.title,
 
-        handle: c.handle,
-
-        image: c.image || ""
+        handle: c.handle
 
       }));
 
@@ -287,14 +294,9 @@ router.get("/search", async (req, res) => {
     // 🔥 RESPONSE
     // =========================
     res.json({
-
       products,
-
-      collections:
-        formattedCollections,
-
+      collections: formattedCollections,
       vendors
-
     });
 
   } catch (err) {
