@@ -4,6 +4,7 @@ const fetch = require("node-fetch");
 const Settings = require("../Models/settingsModel");
 const Product = require("../Models/productModel");
 const Store = require("../Models/store")
+const Collection = require("../Models/collectionModel");
 const verifyWebhook = require('../middleware/verifyShopifyWebhook')
 
 
@@ -53,11 +54,10 @@ router.post("/sync-products", async (req, res) => {
 
         products(
           first: 250
-          after: ${
-            cursor
-              ? `"${cursor}"`
-              : null
-          }
+          after: ${cursor
+          ? `"${cursor}"`
+          : null
+        }
         ) {
 
           pageInfo {
@@ -269,5 +269,167 @@ router.post("/sync-products", async (req, res) => {
     });
   }
 });
+
+router.post(
+  "/sync-collections",
+
+  async (req, res) => {
+
+    try {
+
+      const { shop } =
+        req.body;
+
+      if (!shop) {
+
+        return res
+          .status(400)
+          .json({
+            error:
+              "Shop required"
+          });
+      }
+
+      const store =
+        await Store.findOne({
+          domain: shop
+        });
+
+      if (!store) {
+
+        return res
+          .status(404)
+          .json({
+            error:
+              "Store not found"
+          });
+      }
+
+      // =====================================
+      // SHOPIFY GRAPHQL
+      // =====================================
+      const response =
+        await fetch(
+          `https://${shop}/admin/api/2024-01/graphql.json`,
+          {
+            method: "POST",
+
+            headers: {
+              "Content-Type":
+                "application/json",
+
+              "X-Shopify-Access-Token":
+                store.accessToken
+            },
+
+            body: JSON.stringify({
+
+              query: `
+              {
+                collections(first: 250) {
+                  edges {
+                    node {
+                      id
+                      title
+                      handle
+
+                      image {
+                        url
+                      }
+
+                      productsCount {
+                        count
+                      }
+                    }
+                  }
+                }
+              }
+              `
+            })
+          }
+        );
+
+      const data =
+        await response.json();
+
+      const collections =
+        data?.data?.collections
+          ?.edges || [];
+
+      let synced = 0;
+
+      for (
+        const item of collections
+      ) {
+
+        const c =
+          item.node;
+
+        await Collection.findOneAndUpdate(
+
+          {
+            collectionId:
+              String(c.id),
+
+            store: shop
+          },
+
+          {
+            store: shop,
+
+            collectionId:
+              String(c.id),
+
+            title:
+              c.title || "",
+
+            handle:
+              c.handle || "",
+
+            image:
+              c.image?.url || "",
+
+            productsCount:
+              c.productsCount
+                ?.count || 0,
+
+            searchableText: `
+              ${c.title}
+              ${c.handle}
+            `.toLowerCase()
+
+          },
+
+          {
+            upsert: true
+          }
+        );
+
+        synced++;
+      }
+
+      res.json({
+
+        success: true,
+
+        synced
+
+      });
+
+    } catch (err) {
+
+      console.log(
+        "COLLECTION SYNC ERROR:",
+        err
+      );
+
+      res.status(500)
+        .json({
+          error:
+            err.message
+        });
+    }
+  }
+);
 
 module.exports = router;
