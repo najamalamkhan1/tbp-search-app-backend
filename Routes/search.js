@@ -51,9 +51,12 @@ router.get("/search", async (req, res) => {
     if (!q || !shop) {
 
       return res.json({
-        products: [],
+        query: q,
+        meta: {},
+        vendors: [],
         collections: [],
-        vendors: []
+        products: [],
+        suggestions: []
       });
     }
 
@@ -110,10 +113,259 @@ router.get("/search", async (req, res) => {
     );
 
     // =========================
-    // 🔥 SEARCH REGEX
+    // 🔥 GET ALL VENDORS
     // =========================
-    const regex =
-      new RegExp(finalQuery, "i");
+    const vendorDocs =
+      await Product.distinct(
+        "vendor",
+        {
+          store: shop,
+          status: "ACTIVE"
+        }
+      );
+
+    const uniqueVendors =
+      vendorDocs
+        .filter(Boolean)
+        .map(v => v.trim());
+
+    // =========================
+    // 🔥 NORMALIZE QUERY
+    // =========================
+    const normalizedQuery =
+      finalQuery
+        .toLowerCase()
+        .trim();
+
+    // =========================
+    // 🔥 DETECT VENDOR
+    // =========================
+    let detectedVendor = null;
+
+    // LONGEST MATCH FIRST
+    const sortedVendors =
+      [...uniqueVendors].sort(
+        (a, b) =>
+          b.length - a.length
+      );
+
+    detectedVendor =
+      sortedVendors.find(v =>
+
+        normalizedQuery.startsWith(
+          v.toLowerCase()
+        )
+
+      );
+
+    // =========================
+    // 🔥 REMAINING QUERY
+    // =========================
+    let remainingQuery = "";
+
+    if (detectedVendor) {
+
+      remainingQuery =
+        normalizedQuery
+
+          .replace(
+            detectedVendor.toLowerCase(),
+            ""
+          )
+
+          .trim();
+    }
+
+    console.log(
+      "Detected Vendor:",
+      detectedVendor
+    );
+
+    console.log(
+      "Remaining Query:",
+      remainingQuery
+    );
+
+    // =========================
+    // 🔥 SMART VENDOR SUGGESTIONS
+    // =========================
+    const matchedVendors =
+
+      uniqueVendors
+
+        .filter(v =>
+
+          v
+            .toLowerCase()
+            .startsWith(
+              normalizedQuery
+            )
+
+        )
+
+        .slice(0, 10)
+
+        .map(v => ({
+
+          title: v,
+
+          handle:
+            v
+              .toLowerCase()
+              .replace(/\s+/g, "-"),
+
+          type: "vendor",
+
+          score: 100
+
+        }));
+
+    // =========================
+    // 🔥 TOKENIZE QUERY
+    // =========================
+    const tokens =
+      normalizedQuery
+
+        .split(" ")
+
+        .map(t => t.trim())
+
+        .filter(Boolean);
+
+    // =========================
+    // 🔥 SMART SEARCH CONDITIONS
+    // =========================
+    let searchConditions = [];
+
+    if (detectedVendor) {
+
+      // ✅ VENDOR MATCH
+      searchConditions.push({
+
+        vendor: new RegExp(
+          `^${detectedVendor}$`,
+          "i"
+        )
+
+      });
+
+      // ✅ REMAINING QUERY
+      if (remainingQuery) {
+
+        const remainingTokens =
+          remainingQuery
+
+            .split(" ")
+
+            .filter(Boolean);
+
+        searchConditions.push({
+
+          $or: [
+
+            {
+              title: {
+                $in:
+                  remainingTokens.map(
+                    t =>
+                      new RegExp(
+                        t,
+                        "i"
+                      )
+                  )
+              }
+            },
+
+            {
+              searchableText:
+                new RegExp(
+                  remainingQuery,
+                  "i"
+                )
+            },
+
+            {
+              tags: {
+                $regex:
+                  remainingQuery,
+                $options: "i"
+              }
+            },
+
+            {
+              collections: {
+                $regex:
+                  remainingQuery,
+                $options: "i"
+              }
+            }
+
+          ]
+
+        });
+      }
+
+    } else {
+
+      // =========================
+      // 🔥 NORMAL SEARCH
+      // =========================
+      searchConditions.push({
+
+        $or: [
+
+          {
+            title:
+              new RegExp(
+                normalizedQuery,
+                "i"
+              )
+          },
+
+          {
+            vendor:
+              new RegExp(
+                normalizedQuery,
+                "i"
+              )
+          },
+
+          {
+            productType:
+              new RegExp(
+                normalizedQuery,
+                "i"
+              )
+          },
+
+          {
+            searchableText:
+              new RegExp(
+                normalizedQuery,
+                "i"
+              )
+          },
+
+          {
+            tags: {
+              $regex:
+                normalizedQuery,
+              $options: "i"
+            }
+          },
+
+          {
+            collections: {
+              $regex:
+                normalizedQuery,
+              $options: "i"
+            }
+          }
+
+        ]
+
+      });
+    }
 
     // =========================
     // 🔥 SEARCH PRODUCTS
@@ -125,136 +377,185 @@ router.get("/search", async (req, res) => {
 
         status: "ACTIVE",
 
-        $or: [
-
-          {
-            title: regex
-          },
-
-          {
-            vendor: regex
-          },
-
-          {
-            productType: regex
-          },
-
-          {
-            searchableText: regex
-          },
-
-          {
-            tags: {
-              $regex: finalQuery,
-              $options: "i"
-            }
-          },
-
-          {
-            collections: {
-              $regex: finalQuery,
-              $options: "i"
-            }
-          }
-
-        ]
+        $and: searchConditions
 
       })
-
-        // 🔥 NEW PRODUCTS FIRST
-        .sort({
-          createdAt: -1
-        })
 
         .limit(250)
 
         .lean();
 
     // =========================
-    // 🔥 FORMAT PRODUCTS
+    // 🔥 FORMAT + SCORE PRODUCTS
     // =========================
-    products = products.map(p => ({
+    products = products.map(p => {
 
-      id:
-        String(p.productId),
+      let score = 0;
 
-      title:
-        p.title || "",
+      const title =
+        (p.title || "")
+          .toLowerCase();
 
-      handle:
-        p.handle || "",
+      const vendor =
+        (p.vendor || "")
+          .toLowerCase();
 
-      vendor:
-        p.vendor || "",
-
-      image:
-        p.image || "",
-
-      price:
-        p.price || "0",
-
-      createdAt:
-        p.createdAt
-
-    }));
-
-    // =========================
-    // 🔥 APPLY BOOSTS
-    // =========================
-    if (boostedIds.length > 0) {
-
-      const boosted = [];
-      const normal = [];
-
-      for (const p of products) {
-
-        if (
-          boostedIds.includes(
-            String(p.id)
-          )
-        ) {
-
-          boosted.push(p);
-
-        } else {
-
-          normal.push(p);
-        }
+      // =========================
+      // 🔥 EXACT TITLE
+      // =========================
+      if (
+        title === normalizedQuery
+      ) {
+        score += 150;
       }
 
-      // 🔥 BOOSTED FIRST
-      products = [
-        ...boosted,
-        ...normal
-      ];
-    }
+      // =========================
+      // 🔥 TITLE CONTAINS
+      // =========================
+      if (
+        title.includes(
+          normalizedQuery
+        )
+      ) {
+        score += 100;
+      }
+
+      // =========================
+      // 🔥 EXACT VENDOR
+      // =========================
+      if (
+        detectedVendor &&
+        vendor ===
+          detectedVendor
+            .toLowerCase()
+      ) {
+        score += 90;
+      }
+
+      // =========================
+      // 🔥 REMAINING QUERY
+      // =========================
+      if (
+        remainingQuery &&
+        title.includes(
+          remainingQuery
+        )
+      ) {
+        score += 70;
+      }
+
+      // =========================
+      // 🔥 TOKEN SCORE
+      // =========================
+      tokens.forEach(token => {
+
+        if (
+          title.includes(token)
+        ) {
+          score += 15;
+        }
+
+        if (
+          vendor.includes(token)
+        ) {
+          score += 10;
+        }
+
+      });
+
+      // =========================
+      // 🔥 BOOST SCORE
+      // =========================
+      if (
+        boostedIds.includes(
+          String(p.productId)
+        )
+      ) {
+        score += 500;
+      }
+
+      return {
+
+        id:
+          String(p.productId),
+
+        title:
+          p.title || "",
+
+        handle:
+          p.handle || "",
+
+        vendor:
+          p.vendor || "",
+
+        image:
+          p.image || "",
+
+        price:
+          p.price || "0",
+
+        createdAt:
+          p.createdAt,
+
+        type:
+          "product",
+
+        score
+
+      };
+
+    });
 
     // =========================
-    // 🔥 VENDORS
+    // 🔥 SORT PRODUCTS
     // =========================
-    const vendors = [
+    products.sort((a, b) => {
 
-      ...new Set(
+      // SCORE FIRST
+      if (
+        b.score !== a.score
+      ) {
 
-        products
-          .map(p => p.vendor)
-          .filter(Boolean)
+        return (
+          b.score - a.score
+        );
+      }
 
-      )
+      // NEWEST FIRST
+      return (
+        new Date(b.createdAt) -
+        new Date(a.createdAt)
+      );
 
-    ];
+    });
 
     // =========================
     // 🔥 COLLECTIONS
     // =========================
-    const collections =
+    let collections =
       await Collection.find({
 
         store: shop,
 
-        $text: {
-          $search: finalQuery
-        }
+        $or: [
+
+          {
+            title: {
+              $regex:
+                normalizedQuery,
+              $options: "i"
+            }
+          },
+
+          {
+            handle: {
+              $regex:
+                normalizedQuery,
+              $options: "i"
+            }
+          }
+
+        ]
 
       })
 
@@ -266,53 +567,61 @@ router.get("/search", async (req, res) => {
 
         .lean();
 
-
-    // 🔥 NEWEST FIRST
-    collections.sort((a, b) => {
-
-      const aNew =
-        new Date(
-          a.shopifyCreatedAt || a.createdAt
-        ).getTime();
-
-      const bNew =
-        new Date(
-          b.shopifyCreatedAt || b.createdAt
-        ).getTime();
-
-      // ✅ NEW COLLECTION TOP
-      if (aNew !== bNew) {
-        return bNew - aNew;
-      }
-
-      // ✅ SAME DATE → RELEVANCE
-      return (
-        (b.score || 0) -
-        (a.score || 0)
-      );
-
-    });
-
-
-    // 🔥 FORMAT
+    // =========================
+    // 🔥 FORMAT COLLECTIONS
+    // =========================
     const formattedCollections =
+
       collections.map(c => ({
 
-        title: c.title,
+        title:
+          c.title || "",
 
-        handle: c.handle,
+        handle:
+          c.handle || "",
 
-        image: c.image || ""
+        image:
+          c.image || "",
+
+        type:
+          "collection",
+
+        score: 80
 
       }));
 
     // =========================
-    // 🔥 RESPONSE
+    // 🔥 FINAL RESPONSE
     // =========================
     res.json({
+
+      query: q,
+
+      meta: {
+
+        originalQuery,
+
+        finalQuery,
+
+        detectedVendor,
+
+        remainingQuery,
+
+        totalProducts:
+          products.length
+
+      },
+
+      vendors:
+        matchedVendors,
+
+      collections:
+        formattedCollections,
+
       products,
-      collections: formattedCollections,
-      vendors
+
+      suggestions: []
+
     });
 
   } catch (err) {
@@ -323,7 +632,9 @@ router.get("/search", async (req, res) => {
     );
 
     res.status(500).json({
+
       error: err.message
+
     });
   }
 });
