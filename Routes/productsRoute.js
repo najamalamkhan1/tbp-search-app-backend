@@ -14,7 +14,7 @@ router.post("/sync-products", async (req, res) => {
 
   try {
 
-    const { shop } = req.body;
+    let { shop } = req.body;
 
     if (!shop) {
 
@@ -22,6 +22,15 @@ router.post("/sync-products", async (req, res) => {
         error: "Shop required"
       });
     }
+
+    // =========================
+    // 🔥 CLEAN SHOP DOMAIN
+    // =========================
+    shop = shop
+      .replace(/^https?:\/\//, "")
+      .replace(/\/$/, "")
+      .trim()
+      .toLowerCase();
 
     // =========================
     // 🔥 GET STORE TOKEN
@@ -54,10 +63,7 @@ router.post("/sync-products", async (req, res) => {
 
         products(
           first: 250
-          after: ${cursor
-          ? `"${cursor}"`
-          : null
-        }
+          after: ${cursor ? `"${cursor}"` : null}
         ) {
 
           pageInfo {
@@ -77,6 +83,7 @@ router.post("/sync-products", async (req, res) => {
               productType
               tags
               status
+              createdAt
 
               featuredImage {
                 url
@@ -129,9 +136,24 @@ router.post("/sync-products", async (req, res) => {
       const data =
         await response.json();
 
+      // =========================
+      // 🔥 CHECK ERRORS
+      // =========================
+      if (data.errors) {
+
+        console.log(
+          "SHOPIFY GRAPHQL ERROR:",
+          data.errors
+        );
+
+        return res.status(500).json({
+          error: "Shopify GraphQL Error",
+          details: data.errors
+        });
+      }
+
       const products =
-        data?.data?.products
-          ?.edges || [];
+        data?.data?.products?.edges || [];
 
       // =========================
       // 🔥 BULK OPERATIONS
@@ -141,20 +163,49 @@ router.post("/sync-products", async (req, res) => {
 
           const p = item.node;
 
+          // COLLECTIONS
           const collections =
-            p.collections?.edges
-              ?.map(c =>
-                c.node.title
-              ) || [];
+            Array.isArray(
+              p.collections?.edges
+            )
+              ? p.collections.edges.map(
+                  c => c.node.title || ""
+                )
+              : [];
 
+          // PRICE
           const price =
             p.variants?.edges?.[0]
               ?.node?.price || "0";
 
+          // STOCK
           const stock =
             p.variants?.edges?.[0]
               ?.node
               ?.inventoryQuantity || 0;
+
+          // SEARCHABLE TEXT
+          const searchableText = [
+
+            String(p.title || ""),
+
+            String(p.vendor || ""),
+
+            String(p.productType || ""),
+
+            Array.isArray(p.tags)
+              ? p.tags.join(" ")
+              : "",
+
+            Array.isArray(collections)
+              ? collections.join(" ")
+              : ""
+
+          ]
+            .join(" ")
+            .toLowerCase()
+            .replace(/\s+/g, " ")
+            .trim();
 
           return {
 
@@ -162,7 +213,7 @@ router.post("/sync-products", async (req, res) => {
 
               filter: {
                 store: shop,
-                productId: p.id
+                productId: String(p.id)
               },
 
               update: {
@@ -171,103 +222,107 @@ router.post("/sync-products", async (req, res) => {
 
                   store: shop,
 
-                  productId: p.id,
+                  productId:
+                    String(p.id),
 
-                  title: p.title || "",
+                  title:
+                    p.title || "",
 
-                  handle: p.handle || "",
+                  handle:
+                    p.handle || "",
 
-                  vendor: p.vendor || "",
+                  vendor:
+                    p.vendor || "",
 
-                  productType: p.productType || "",
+                  productType:
+                    p.productType || "",
 
-                  tags: p.tags || [],
-
-                  collections,
+                  tags:
+                    Array.isArray(p.tags)
+                      ? p.tags
+                      : [],
 
                   image:
                     p.featuredImage?.url || "",
 
-                  price,
+                  price:
+                    String(price),
 
-                  stock,
+                  stock:
+                    stock,
+
+                  collections:
+                    collections,
 
                   status:
                     p.status || "ACTIVE",
 
-                  searchableText: `
-    ${p.title || ""}
-    ${p.vendor || ""}
-    ${p.productType || ""}
-    ${(p.tags || []).join(" ")}
-    ${collections.join(" ")}
-  `
-                    .toLowerCase()
-                    .replace(/\s+/g, " ")
-                    .trim()
+                  shopifyCreatedAt:
+                    p.createdAt,
 
+                  searchableText
                 }
-                  .toLowerCase()
-                  .replace(/\s+/g, " ")
-                  .trim()
-              }
-            },
+              },
 
-            upsert: true
-          }
+              upsert: true
+            }
+          };
         });
 
-// =========================
-// 🔥 SAVE BATCH
-// =========================
-if (operations.length > 0) {
+      // =========================
+      // 🔥 SAVE BATCH
+      // =========================
+      if (operations.length > 0) {
 
-  await Product.bulkWrite(
-    operations
-  );
+        await Product.bulkWrite(
+          operations,
+          { ordered: false }
+        );
 
-  totalSynced +=
-    operations.length;
-}
+        totalSynced +=
+          operations.length;
+      }
 
-// =========================
-// 🔥 PAGINATION
-// =========================
-hasNextPage =
-  data?.data?.products
-    ?.pageInfo
-    ?.hasNextPage;
+      // =========================
+      // 🔥 PAGINATION
+      // =========================
+      hasNextPage =
+        data?.data?.products
+          ?.pageInfo?.hasNextPage;
 
-cursor =
-  products[
-    products.length - 1
-  ]?.cursor;
+      cursor =
+        products[
+          products.length - 1
+        ]?.cursor || null;
 
-console.log(
-  "SYNCED:",
-  totalSynced
-);
+      console.log(
+        "SYNCED:",
+        totalSynced
+      );
     }
 
-// =========================
-// ✅ DONE
-// =========================
-res.json({
-  success: true,
-  totalSynced
-});
+    // =========================
+    // ✅ DONE
+    // =========================
+    res.json({
+
+      success: true,
+
+      totalSynced
+
+    });
 
   } catch (err) {
 
-  console.log(
-    "SYNC ERROR:",
-    err
-  );
+    console.log(
+      "SYNC ERROR:",
+      err
+    );
 
-  res.status(500).json({
-    error: err.message
-  });
-}
+    res.status(500).json({
+      error: err.message
+    });
+  }
 });
 
 router.post(
