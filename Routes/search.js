@@ -166,7 +166,7 @@ router.get("/search", async (req, res) => {
           createdAt: -1
         })
 
-        .limit(20)
+        .limit(250)
 
         .lean();
 
