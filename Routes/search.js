@@ -482,7 +482,9 @@ router.get("/search", async (req, res) => {
           normalizedQuery
         )
       ) {
-        score += 50000;
+
+        score += 15000;
+
       }
 
       // ======================
@@ -579,28 +581,28 @@ router.get("/search", async (req, res) => {
         (1000 * 60 * 60 * 24);
 
       // 2026 / NEWEST PRODUCTS
+      // VERY NEW
       if (daysOld <= 7) {
 
-        score += 100000;
+        score += 500000;
 
       } else if (
         daysOld <= 30
       ) {
 
-        score += 70000;
+        score += 300000;
 
       } else if (
         daysOld <= 90
       ) {
 
-        score += 40000;
+        score += 150000;
 
       } else if (
         daysOld <= 180
       ) {
 
-        score += 20000;
-
+        score += 70000;
       }
 
       return {
@@ -651,16 +653,43 @@ router.get("/search", async (req, res) => {
 
       uniqueVendors
 
-        .filter(v =>
+        .filter(v => {
 
-          v
-            .toLowerCase()
-            .includes(
-              detectedVendor ||
+          const vendorName =
+            v.toLowerCase();
+
+          // FULL QUERY
+          if (
+            vendorName.includes(
               normalizedQuery
             )
+          ) {
+            return true;
+          }
 
-        )
+          // DETECTED VENDOR
+          if (
+
+            detectedVendor &&
+
+            vendorName.includes(
+              detectedVendor
+                .toLowerCase()
+            )
+
+          ) {
+            return true;
+          }
+
+          // TOKEN MATCH
+          return remainingTokens.some(
+            token =>
+              vendorName.includes(
+                token
+              )
+          );
+
+        })
 
         .map(vendor => {
 
