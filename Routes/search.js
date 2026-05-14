@@ -246,91 +246,6 @@ router.get("/search", async (req, res) => {
     );
 
     // =========================
-    // 🔥 SMART VENDORS
-    // =========================
-
-    let vendorResults =
-
-      uniqueVendors
-
-        .filter(v =>
-
-          v
-            .toLowerCase()
-            .includes(
-              normalizedQuery
-            )
-
-        )
-
-        .map(vendor => {
-
-          // PRODUCTS OF THIS VENDOR
-          const vendorProducts =
-
-            products.filter(p =>
-
-              (
-                p.vendor || ""
-              )
-                .toLowerCase()
-                .includes(
-                  vendor.toLowerCase()
-                )
-
-            );
-
-          // LATEST PRODUCT
-          const latestProduct =
-
-            vendorProducts.sort((a, b) =>
-
-              new Date(
-                b.createdAt ||
-                b.shopifyCreatedAt
-              ) -
-
-              new Date(
-                a.createdAt ||
-                a.shopifyCreatedAt
-              )
-
-            )[0];
-
-          return {
-
-            title:
-              vendor,
-
-            type:
-              "vendor",
-
-            latestDate:
-
-              latestProduct
-                ?.createdAt ||
-
-              latestProduct
-                ?.shopifyCreatedAt ||
-
-              0,
-
-            score:
-
-              vendorProducts
-                .reduce(
-                  (acc, p) =>
-                    acc + (
-                      p.score || 0
-                    ),
-                  0
-                )
-
-          };
-
-        });
-
-    // =========================
     // 🔥 TOKENIZE QUERY
     // =========================
     const tokens =
@@ -741,6 +656,7 @@ router.get("/search", async (req, res) => {
           v
             .toLowerCase()
             .includes(
+              detectedVendor ||
               normalizedQuery
             )
 
@@ -766,7 +682,7 @@ router.get("/search", async (req, res) => {
           // LATEST PRODUCT
           const latestProduct =
 
-            vendorProducts.sort((a, b) =>
+            [...vendorProducts].sort((a, b) =>
 
               new Date(
                 b.createdAt ||
@@ -928,31 +844,46 @@ router.get("/search", async (req, res) => {
         // RELATED PRODUCTS
         const relatedProducts =
 
-          products.filter(p =>
+          products.filter(p => {
 
-            (
-              p.collections || []
-            )
+            const productCollections =
 
-              .toString()
-
-              .toLowerCase()
-
-              .includes(
-
-                (
-                  c.title || ""
-                )
-                  .toLowerCase()
-
+              Array.isArray(
+                p.collections
               )
 
-          );
+                ? p.collections
+                  .join(" ")
+                  .toLowerCase()
 
+                : (
+                  p.collections || ""
+                )
+                  .toString()
+                  .toLowerCase();
+
+            const collectionTitle =
+              (
+                c.title || ""
+              ).toLowerCase();
+
+            return (
+
+              productCollections.includes(
+                collectionTitle
+              ) ||
+
+              collectionTitle.includes(
+                productCollections
+              )
+
+            );
+
+          });
         // LATEST PRODUCT
         const latestProduct =
 
-          relatedProducts.sort((a, b) =>
+          [...relatedProducts].sort((a, b) =>
 
             new Date(
               b.createdAt ||
@@ -1078,7 +1009,8 @@ router.get("/search", async (req, res) => {
       collections:
         formattedCollections,
 
-      products,
+      products:
+        products.slice(0, 20),
 
       suggestions: []
 
