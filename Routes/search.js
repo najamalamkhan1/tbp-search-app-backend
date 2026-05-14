@@ -432,7 +432,7 @@ router.get("/search", async (req, res) => {
 
       })
 
-        .limit(250)
+        .limit(80)
 
         .lean();
 
