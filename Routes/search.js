@@ -586,19 +586,19 @@ router.get("/search", async (req, res) => {
       // VERY NEW
       if (daysOld <= 7) {
 
-        score += 300;
+        score += 3000;
 
       } else if (
         daysOld <= 30
       ) {
 
-        score += 200;
+        score += 2000;
 
       } else if (
         daysOld <= 90
       ) {
 
-        score += 100;
+        score += 1000;
       }
 
       return {
