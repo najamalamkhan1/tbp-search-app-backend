@@ -203,6 +203,7 @@ router.get("/search", async (req, res) => {
     // =========================
     // 🔥 REMAINING QUERY
     // =========================
+
     let remainingQuery = "";
 
     if (detectedVendor) {
@@ -217,6 +218,22 @@ router.get("/search", async (req, res) => {
 
           .trim();
     }
+
+    // =========================
+    // 🔥 TOKENS
+    // =========================
+
+    const remainingTokens =
+
+      remainingQuery
+
+        .split(" ")
+
+        .filter(Boolean)
+
+        .map(t =>
+          t.toLowerCase()
+        );
 
     console.log(
       "Detected Vendor:",
@@ -631,25 +648,34 @@ router.get("/search", async (req, res) => {
     // 🔥 SORT PRODUCTS
     // =========================
 
-    if (
-      b.score !== a.score
-    ) {
+    products.sort((a, b) => {
+
+      // SCORE FIRST
+      if (
+        b.score !== a.score
+      ) {
+
+        return (
+          b.score - a.score
+        );
+      }
+
+      // THEN LATEST
       return (
-        b.score - a.score
+
+        new Date(
+          b.createdAt ||
+          b.shopifyCreatedAt
+        ) -
+
+        new Date(
+          a.createdAt ||
+          a.shopifyCreatedAt
+        )
+
       );
-    }
 
-    // THEN LATEST
-    return (
-      new Date(
-        b.createdAt ||
-        b.shopifyCreatedAt
-      ) -
-
-      new Date(
-        a.createdAt ||
-        a.shopifyCreatedAt
-      ));
+    });
 
     // =========================
     // 🔥 COLLECTIONS
