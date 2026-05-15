@@ -7,7 +7,7 @@ const Synonym = require("../Models/synonymModel");
 const Boost = require("../Models/boostModel");
 const Product = require("../Models/productModel")
 const Collection = require("../Models/collectionModel");
-const FeaturedBrand = require("../Models/featuredBrandModel");
+const featuredBrands = require("../Models/featuredBrandsModel");
 
 const SHOPIFY_URL = `${process.env.SHOPIFY_STORE_URL}/api/graphql.json`;
 
