@@ -1101,15 +1101,31 @@ router.get(
       // STORES
       // =========================
 
+      const { store } =
+        req.query;
+
+      if (!store) {
+
+        return res.status(400)
+          .json({
+            error:
+              "Store is required"
+          });
+
+      }
+
       const stores =
-        await Store.find().lean();
+        await Store.find({
+          domain: store
+        }).lean();
 
       // FEATURED BRANDS
 
-      const featuredBrands =
-        await FeaturedBrand.find({
-          active: true
-        }).lean();
+      await FeaturedBrand.find({
+        active: true,
+        store:
+          store.toLowerCase()
+      }).lean();
 
       // FEATURED MAP
       const featuredMap = {};
@@ -1129,6 +1145,8 @@ router.get(
 
           {
             $match: {
+              store:
+                store.toLowerCase(),
               vendor: {
                 $exists: true,
                 $ne: null
