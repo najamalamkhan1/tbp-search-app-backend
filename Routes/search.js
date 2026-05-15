@@ -1147,7 +1147,10 @@ router.get("/trending-brands", async (req, res) => {
         {
           $match: {
             store:
-              store.toLowerCase(),
+              new RegExp(
+                `^${store}$`,
+                "i"
+              ),
             vendor: {
               $exists: true,
               $ne: null
@@ -1534,7 +1537,10 @@ router.get("/trending", async (req, res) => {
 
     const stores =
       await Store.find({
-        domain: store
+        domain: new RegExp(
+          `^${store}$`,
+          "i"
+        )
       }).lean();
 
     // =========================
@@ -1622,7 +1628,10 @@ router.get("/trending", async (req, res) => {
 
           const data =
             await response.json();
-
+          console.log(
+            "SHOPIFY RESPONSE:",
+            JSON.stringify(data, null, 2)
+          );
           return (
 
             data?.data?.products?.edges?.map(item => {
@@ -1702,7 +1711,10 @@ router.get("/trending", async (req, res) => {
           $match: {
 
             store:
-              store.toLowerCase(),
+              new RegExp(
+                `^${store}$`,
+                "i"
+              ),
 
             productId: {
               $exists: true,
