@@ -7,7 +7,7 @@ const Synonym = require("../Models/synonymModel");
 const Boost = require("../Models/boostModel");
 const Product = require("../Models/productModel")
 const Collection = require("../Models/collectionModel");
-const featuredBrands = require("../Models/featuredBrandsModel");
+const FeaturedBrand = require("../Models/featuredBrandsModel");
 
 const SHOPIFY_URL = `${process.env.SHOPIFY_STORE_URL}/api/graphql.json`;
 
@@ -1284,7 +1284,10 @@ router.get(
 
                   createdAt:
                     p.node.createdAt || null,
-
+                  timestamp:
+                    new Date(
+                      p.node.createdAt || 0
+                    ).getTime(),
                   image:
                     p.node.images
                       ?.edges?.[0]
@@ -1365,192 +1368,123 @@ router.get(
 
       Object.values(brandMap)
         .forEach(brand => {
-
           const latestProduct =
-
             [...brand.products]
-
               .sort((a, b) =>
-
-                new Date(
-                  b.createdAt || 0
-                ) -
-
-                new Date(
-                  a.createdAt || 0
-                )
-
+                b.timestamp -
+                a.timestamp
               )[0];
 
           // =========================
           // LATEST DATE
           // =========================
-
           brand.latestDate =
             latestProduct?.createdAt || null;
 
           // =========================
           // BASE SCORE
           // =========================
-
           brand.score +=
             brand.products.length * 100;
 
           // =========================
           // ANALYTICS BOOST
           // =========================
-
           const analyticsBrand =
-
             analyticsMap[
             brand.title.toLowerCase()
             ];
-
           if (analyticsBrand) {
-
             // SEARCH BOOST
             brand.score +=
               analyticsBrand.searches * 500;
-
             // CLICK BOOST
             brand.score +=
               analyticsBrand.clicks * 1000;
-
           }
 
           // =========================
           // RECENCY BOOST
           // =========================
-
           if (latestProduct?.createdAt) {
-
             const daysOld =
-
               (
                 Date.now() -
-
                 new Date(
                   latestProduct.createdAt
                 )
-
-              ) /
-
-              (1000 * 60 * 60 * 24);
-
+              ) / (1000 * 60 * 60 * 24);
             if (daysOld <= 7) {
-
               brand.score += 5000;
-
             } else if (
               daysOld <= 30
             ) {
-
               brand.score += 3000;
-
             }
-
           }
 
           // =========================
           // FEATURED BOOST
           // =========================
-
           const featured =
-
             featuredMap[
             brand.title.toLowerCase()
             ];
-
           if (featured) {
-
             brand.score +=
               100000 +
               (featured.priority || 0);
-
           }
-
         });
 
       // =========================
       // FINAL BRANDS
       // =========================
-
       const brands =
-
         Object.values(brandMap)
-
           .sort((a, b) =>
-
             b.score - a.score
-
           )
-
           .slice(0, 10)
-
           .map(b => ({
-
             title:
               b.title,
-
             score:
               b.score,
-
             latestDate:
               b.latestDate,
-
             totalProducts:
               b.products.length
-
           }));
 
       // =========================
       // TRENDING PRODUCTS
       // =========================
-
       const trendingProducts =
-
         [...products]
-
           .sort((a, b) =>
-
-            new Date(
-              b.createdAt || 0
-            ) -
-
-            new Date(
-              a.createdAt || 0
-            )
-
+            b.timestamp -
+            a.timestamp
           )
-
           .slice(0, 20);
 
       // =========================
       // RESPONSE
       // =========================
-
       res.json({
-
         brands,
-
         products:
           trendingProducts
-
       });
-
     } catch (err) {
-
       console.error(
         "TRENDING BRANDS ERROR:",
         err
       );
-
       res.status(500).json({
         error: err.message
       });
-
     }
-
   }
 );
 
