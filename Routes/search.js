@@ -167,7 +167,9 @@ router.get("/search", async (req, res) => {
           uniqueVendors,
 
         timestamp:
-          Date.now()
+          new Date(
+            node.createdAt || 0
+          ).getTime(),
 
       };
     }
@@ -1336,6 +1338,69 @@ router.get("/trending-brands", async (req, res) => {
       );
 
     // =========================
+    // ANALYTICS
+    // =========================
+
+    const analyticsData =
+
+      await Analytics.aggregate([
+
+        {
+          $match: {
+
+            store:
+              store.toLowerCase(),
+
+            productId: {
+              $exists: true,
+              $ne: null
+            }
+
+          }
+        },
+
+        {
+          $group: {
+
+            _id: "$productId",
+
+            clicks: {
+              $sum: {
+                $cond: [
+                  {
+                    $eq: [
+                      "$type",
+                      "click"
+                    ]
+                  },
+                  1,
+                  0
+                ]
+              }
+            },
+
+            searches: {
+              $sum: {
+                $cond: [
+                  {
+                    $eq: [
+                      "$type",
+                      "search"
+                    ]
+                  },
+                  1,
+                  0
+                ]
+              }
+            }
+
+          }
+
+        }
+
+      ]);
+
+    // =========================
     // PRODUCTS
     // =========================
 
@@ -1506,82 +1571,372 @@ router.get("/trending-brands", async (req, res) => {
 );
 
 router.get("/trending", async (req, res) => {
+
   try {
-    const stores = await Store.find();
 
-    const promises = stores.map(async (store) => {
-      try {
-        const cleanDomain = store.domain.replace(/\/$/, "");
+    // =========================
+    // STORE
+    // =========================
 
-        const response = await fetch(
-          `https://${cleanDomain}/admin/api/2024-01/graphql.json`,
-          {
-            method: "POST",
-            headers: {
-              "X-Shopify-Access-Token": store.accessToken,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              query: `
+    const { store } =
+      req.query;
+
+    if (!store) {
+
+      return res.status(400)
+        .json({
+          error:
+            "Store is required"
+        });
+
+    }
+
+    // =========================
+    // STORES
+    // =========================
+
+    const stores =
+      await Store.find({
+        domain: store
+      }).lean();
+
+    // =========================
+    // FETCH PRODUCTS
+    // =========================
+
+    const promises =
+
+      stores.map(async store => {
+
+        try {
+
+          const cleanDomain =
+            store.domain.replace(
+              /\/$/,
+              ""
+            );
+
+          const response =
+            await fetch(
+
+              `https://${cleanDomain}/admin/api/2024-01/graphql.json`,
+
               {
-                products(first: 6, sortKey: CREATED_AT, reverse: true) {
-                  edges {
-                    node {
-                      id
-                      title
-                      handle
-                      images(first: 1) {
-                        edges {
-                          node {
-                            url
+                method: "POST",
+
+                headers: {
+
+                  "X-Shopify-Access-Token":
+                    store.accessToken,
+
+                  "Content-Type":
+                    "application/json",
+
+                },
+
+                body: JSON.stringify({
+
+                  query: `
+                  {
+                    products(
+                      first: 50,
+                      sortKey: CREATED_AT,
+                      reverse: true
+                    ) {
+
+                      edges {
+
+                        node {
+
+                          id
+                          title
+                          handle
+                          createdAt
+
+                          images(first: 1) {
+                            edges {
+                              node {
+                                url
+                              }
+                            }
                           }
-                        }
-                      }
-                      variants(first: 1) {
-                        edges {
-                          node {
-                            price
+
+                          variants(first: 1) {
+                            edges {
+                              node {
+                                price
+                              }
+                            }
                           }
+
                         }
+
                       }
+
                     }
                   }
-                }
+                  `,
+
+                }),
+
               }
-              `,
-            }),
+
+            );
+
+          const data =
+            await response.json();
+
+          return (
+
+            data?.data?.products?.edges?.map(item => {
+
+              const node =
+                item.node;
+
+              return {
+
+                id:
+                  node.id,
+
+                title:
+                  node.title || "",
+
+                handle:
+                  node.handle || "",
+
+                createdAt:
+                  node.createdAt || null,
+
+                timestamp:
+                  new Date(
+                    node.createdAt || 0
+                  ).getTime(),
+
+                image:
+                  node.images
+                    ?.edges?.[0]
+                    ?.node?.url || "",
+
+                price:
+                  node.variants
+                    ?.edges?.[0]
+                    ?.node?.price || "0",
+
+                store:
+                  cleanDomain,
+
+              };
+
+            }) || []
+
+          );
+
+        } catch (err) {
+
+          console.log(
+            "TRENDING ERROR:",
+            store.domain
+          );
+
+          return [];
+
+        }
+
+      });
+
+    // =========================
+    // RESULTS
+    // =========================
+
+    const results =
+      await Promise.all(
+        promises
+      );
+
+    // =========================
+    // ANALYTICS
+    // =========================
+
+    const analyticsData =
+
+      await Analytics.aggregate([
+
+        {
+          $match: {
+
+            store:
+              store.toLowerCase(),
+
+            productId: {
+              $exists: true,
+              $ne: null
+            }
+
           }
-        );
+        },
 
-        const data = await response.json();
+        {
+          $group: {
 
-        return (
-          data?.data?.products?.edges?.map((item) => {
-            const node = item.node;
+            _id: "$productId",
 
-            return {
-              id: node.id,
-              title: node.title,
-              handle: node.handle,
+            clicks: {
+              $sum: {
+                $cond: [
+                  {
+                    $eq: [
+                      "$type",
+                      "click"
+                    ]
+                  },
+                  1,
+                  0
+                ]
+              }
+            },
 
-              image: node.images?.edges?.[0]?.node?.url || "",
-              price: node.variants?.edges?.[0]?.node?.price || "0",
+            searches: {
+              $sum: {
+                $cond: [
+                  {
+                    $eq: [
+                      "$type",
+                      "search"
+                    ]
+                  },
+                  1,
+                  0
+                ]
+              }
+            }
 
-              store: cleanDomain,
-            };
-          }) || []
-        );
-      } catch (err) {
-        console.log("TRENDING ERROR:", store.domain);
-        return [];
-      }
+          }
+
+        }
+
+      ]);
+
+    // =========================
+    // ANALYTICS MAP
+    // =========================
+
+    const analyticsMap = {};
+
+    analyticsData.forEach(a => {
+
+      analyticsMap[
+        a._id
+      ] = a;
+
     });
 
-    const results = await Promise.all(promises);
-    res.json(results.flat());
+    // =========================
+    // PRODUCTS
+    // =========================
+
+    const products =
+      results.flat();
+
+    // =========================
+    // SCORE PRODUCTS
+    // =========================
+
+    const scoredProducts =
+
+      products.map(product => {
+
+        let score = 0;
+
+        // =========================
+        // ANALYTICS SCORE
+        // =========================
+
+        const analytics =
+
+          analyticsMap[
+            product.id
+          ];
+
+        if (analytics) {
+
+          // CLICK BOOST
+
+          score +=
+            analytics.clicks * 1000;
+
+          // SEARCH BOOST
+
+          score +=
+            analytics.searches * 300;
+
+        }
+
+        // =========================
+        // RECENCY BOOST
+        // =========================
+
+        const daysOld =
+
+          (
+            Date.now() -
+            product.timestamp
+          ) /
+
+          (1000 * 60 * 60 * 24);
+
+        if (daysOld <= 7) {
+
+          score += 5000;
+
+        } else if (
+          daysOld <= 30
+        ) {
+
+          score += 3000;
+
+        }
+
+        return {
+
+          ...product,
+
+          score
+
+        };
+
+      });
+
+    // =========================
+    // FINAL PRODUCTS
+    // =========================
+
+    const trendingProducts =
+
+      scoredProducts
+
+        .sort((a, b) =>
+
+          b.score - a.score
+
+        )
+
+        .slice(0, 12);
+
+    // =========================
+    // RESPONSE
+    // =========================
+
+    res.json(
+      trendingProducts
+    );
 
   } catch (err) {
-    res.status(500).json({ error: err.message });
+
+    console.error("TRENDING PRODUCTS ERROR:", err);
+
+      res.status(500).json({
+      error: err.message
+    });
   }
 });
 
