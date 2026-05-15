@@ -9,19 +9,41 @@ router.post("/analytics", async (req, res) => {
       type,
       query,
       productId,
+      productHandle,
       store,
-      productTitle,   // 🔥 ADD
-      productImage    // 🔥 ADD
+      productTitle,
+      productImage
     } = req.body;
 
-    console.log("BODY RECEIVED:", req.body);
+    if (process.env.NODE_ENV !== "production") {
+
+      console.log(
+        "BODY RECEIVED:",
+        req.body
+      );
+
+    }
 
     if (!store) {
       return res.status(400).json({ error: "Store is required" });
     }
+
+    if (
+      type === "search" &&
+      !query?.trim()
+    ) {
+      return res.json({
+        success: false
+      });
+    }
+
+    const userAgent =
+      req.headers["user-agent"] || "";
+
     await Analytics.create({
       type,
-      query,
+      query:
+        query?.trim() || "",
       normalizedQuery:
         (query || "")
           .toLowerCase()
@@ -34,10 +56,15 @@ router.post("/analytics", async (req, res) => {
       productImage:
         productImage || null,
       vendor:
-        vendor || null,
-      store,
+        vendor
+          ?.trim()
+          ?.toLowerCase() || null,
+      store:
+        store
+          ?.trim()
+          ?.toLowerCase(),
       device:
-        req.headers["user-agent"]
+        userAgent
           ?.includes("Mobile")
           ? "mobile"
           : "desktop",
