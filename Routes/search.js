@@ -1338,69 +1338,6 @@ router.get("/trending-brands", async (req, res) => {
       );
 
     // =========================
-    // ANALYTICS
-    // =========================
-
-    const analyticsData =
-
-      await Analytics.aggregate([
-
-        {
-          $match: {
-
-            store:
-              store.toLowerCase(),
-
-            productId: {
-              $exists: true,
-              $ne: null
-            }
-
-          }
-        },
-
-        {
-          $group: {
-
-            _id: "$productId",
-
-            clicks: {
-              $sum: {
-                $cond: [
-                  {
-                    $eq: [
-                      "$type",
-                      "click"
-                    ]
-                  },
-                  1,
-                  0
-                ]
-              }
-            },
-
-            searches: {
-              $sum: {
-                $cond: [
-                  {
-                    $eq: [
-                      "$type",
-                      "search"
-                    ]
-                  },
-                  1,
-                  0
-                ]
-              }
-            }
-
-          }
-
-        }
-
-      ]);
-
-    // =========================
     // PRODUCTS
     // =========================
 
@@ -1754,6 +1691,69 @@ router.get("/trending", async (req, res) => {
       );
 
     // =========================
+    // ANALYTICS DATA
+    // =========================
+
+    const analyticsData =
+
+      await Analytics.aggregate([
+
+        {
+          $match: {
+
+            store:
+              store.toLowerCase(),
+
+            productId: {
+              $exists: true,
+              $ne: null
+            }
+
+          }
+        },
+
+        {
+          $group: {
+
+            _id: "$productId",
+
+            clicks: {
+              $sum: {
+                $cond: [
+                  {
+                    $eq: [
+                      "$type",
+                      "click"
+                    ]
+                  },
+                  1,
+                  0
+                ]
+              }
+            },
+
+            searches: {
+              $sum: {
+                $cond: [
+                  {
+                    $eq: [
+                      "$type",
+                      "search"
+                    ]
+                  },
+                  1,
+                  0
+                ]
+              }
+            }
+
+          }
+
+        }
+
+      ]);
+
+    // =========================
     // ANALYTICS MAP
     // =========================
 
@@ -1791,7 +1791,7 @@ router.get("/trending", async (req, res) => {
         const analytics =
 
           analyticsMap[
-            product.id
+          product.id
           ];
 
         if (analytics) {
@@ -1871,7 +1871,7 @@ router.get("/trending", async (req, res) => {
 
     console.error("TRENDING PRODUCTS ERROR:", err);
 
-      res.status(500).json({
+    res.status(500).json({
       error: err.message
     });
   }
