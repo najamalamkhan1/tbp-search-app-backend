@@ -18,7 +18,11 @@ router.post("/store/add", async (req, res) => {
     }
 
     // ✅ clean domain
-    domain = domain.replace("https://", "").trim();
+    domain = domain
+      .replace(/^https?:\/\//, "")
+      .replace(/\/$/, "")
+      .trim()
+      .toLowerCase();
 
     // ✅ check duplicate
     const existing = await Store.findOne({ domain });
@@ -34,9 +38,7 @@ router.post("/store/add", async (req, res) => {
       accessToken,
     });
 
-    console.log("✅ STORE SAVED:", newStore);
-
-    res.json({
+        res.json({
       success: true,
       store: newStore,
     });
@@ -52,14 +54,22 @@ router.post("/store/add", async (req, res) => {
 // ✅ GET ALL STORES (FIXED)
 // ========================================
 router.get("/store", async (req, res) => {
+
   try {
-    const stores = await Store.find(); // 🔥 token bhi dikhega
-    console.log("📦 STORES:", stores);
+
+    const stores =
+      await Store.find().lean();
 
     res.json(stores);
+
   } catch (err) {
-    res.status(500).json({ error: err.message });
+
+    res.status(500).json({
+      error: err.message
+    });
+
   }
+
 });
 
 
@@ -69,7 +79,6 @@ router.get("/store", async (req, res) => {
 router.delete("/stores/delete-all", async (req, res) => {
   try {
     await Store.deleteMany({});
-    console.log("🗑️ ALL STORES DELETED");
 
     res.json({ success: true });
   } catch (err) {
@@ -95,8 +104,6 @@ router.delete("/store/:id", async (req, res) => {
       return res.status(404).json({ error: "Store not found" });
     }
 
-    console.log("🗑️ STORE DELETED:", id);
-
     res.json({ message: "Store deleted successfully" });
 
   } catch (err) {
@@ -119,7 +126,11 @@ router.put("/store/:id", async (req, res) => {
       });
     }
 
-    domain = domain.replace("https://", "").trim();
+    domain = domain
+      .replace(/^https?:\/\//, "")
+      .replace(/\/$/, "")
+      .trim()
+      .toLowerCase();
 
     const updated = await Store.findByIdAndUpdate(
       req.params.id,
@@ -130,8 +141,6 @@ router.put("/store/:id", async (req, res) => {
     if (!updated) {
       return res.status(404).json({ error: "Store not found" });
     }
-
-    console.log("✏️ STORE UPDATED:", updated);
 
     res.json(updated);
 
@@ -193,8 +202,6 @@ router.post("/store/save", async (req, res) => {
 
       await existingStore.save();
 
-      console.log("STORE UPDATED");
-
       return res.json({
         success: true,
         message: "Store updated"
@@ -210,19 +217,12 @@ router.post("/store/save", async (req, res) => {
       shopName
     });
 
-    console.log("STORE CREATED");
-
     res.json({
       success: true,
       message: "Store saved"
     });
 
   } catch (err) {
-
-    console.log(
-      "STORE SAVE ERROR:",
-      err
-    );
 
     res.status(500).json({
       error: err.message

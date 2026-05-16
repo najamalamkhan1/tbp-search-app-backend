@@ -117,11 +117,6 @@ router.get("/search", async (req, res) => {
         String(b.productId)
       );
 
-    console.log(
-      "Boosted IDs:",
-      boostedIds
-    );
-
     // =========================
     // 🔥 GET ALL VENDORS
     // =========================
@@ -255,16 +250,6 @@ router.get("/search", async (req, res) => {
         .map(t =>
           t.toLowerCase()
         );
-
-    console.log(
-      "Detected Vendor:",
-      detectedVendor
-    );
-
-    console.log(
-      "Remaining Query:",
-      remainingQuery
-    );
 
     // =========================
     // 🔥 TOKENIZE QUERY
@@ -610,25 +595,30 @@ router.get("/search", async (req, res) => {
       // VERY NEW
       if (daysOld <= 7) {
 
-        score += 500000;
+        score += 2000000;
 
       } else if (
         daysOld <= 30
       ) {
 
-        score += 300000;
+        score += 1200000;
 
       } else if (
         daysOld <= 90
       ) {
 
-        score += 150000;
+        score += 500000;
 
       } else if (
         daysOld <= 180
       ) {
 
-        score += 70000;
+        score += 100000;
+
+      } else {
+
+        score -= 50000;
+
       }
 
       return {
@@ -1045,33 +1035,21 @@ router.get("/search", async (req, res) => {
       query: q,
 
       meta: {
-
         originalQuery,
-
         finalQuery,
-
         detectedVendor,
-
         remainingQuery,
-
         totalProducts:
           products.length
-
       },
-
       vendors:
         vendorResults,
-
       collections:
         formattedCollections,
-
       products:
         products.slice(0, 20),
-
       suggestions: []
-
     });
-
   } catch (err) {
 
     console.log(
@@ -1369,6 +1347,7 @@ router.get("/trending-brands", async (req, res) => {
         // RECENCY BOOST
         // =========================
         if (latestProduct?.createdAt) {
+
           const daysOld =
             (
               Date.now() -
@@ -1376,13 +1355,25 @@ router.get("/trending-brands", async (req, res) => {
                 latestProduct.createdAt
               )
             ) / (1000 * 60 * 60 * 24);
+
           if (daysOld <= 7) {
-            brand.score += 5000;
+
+            brand.score += 100000;
+
           } else if (
             daysOld <= 30
           ) {
-            brand.score += 3000;
+
+            brand.score += 50000;
+
+          } else if (
+            daysOld <= 90
+          ) {
+
+            brand.score += 20000;
+
           }
+
         }
 
         // =========================
@@ -1763,54 +1754,65 @@ router.get("/trending", async (req, res) => {
 
         }
 
-        // =========================
-        // RECENCY BOOST
-        // =========================
         const daysOld =
           (
             Date.now() -
             product.timestamp
           ) / (1000 * 60 * 60 * 24);
+
+        // =========================
+        // RECENCY BOOST
+        // =========================
+
         if (daysOld <= 3) {
-          score += 800;
+
+          score += 800000;
+
         } else if (daysOld <= 7) {
-          score += 500;
+
+          score += 500000;
+
         } else if (daysOld <= 30) {
-          score += 200;
+
+          score += 250000;
+
+        } else if (daysOld <= 90) {
+
+          score += 100000;
+
+        } else if (daysOld <= 180) {
+
+          score += 30000;
+
         }
-        return {
-          ...product,
-          score
-        };
-      });
 
-    // =========================
-    // FINAL PRODUCTS
-    // =========================
+        // =========================
+        // FINAL PRODUCTS
+        // =========================
 
-    const trendingProducts =
-      scoredProducts
-        .sort((a, b) =>
-          b.score - a.score
-        )
-        .slice(0, 12);
+        const trendingProducts =
+          scoredProducts
+            .sort((a, b) =>
+              b.score - a.score
+            )
+            .slice(0, 12);
 
-    // =========================
-    // RESPONSE
-    // =========================
+        // =========================
+        // RESPONSE
+        // =========================
 
-    res.json(
-      trendingProducts
-    );
+        res.json(
+          trendingProducts
+        );
 
-  } catch (err) {
+      } catch (err) {
 
-    console.error("TRENDING PRODUCTS ERROR:", err);
+        console.error("TRENDING PRODUCTS ERROR:", err);
 
-    res.status(500).json({
-      error: err.message
-    });
-  }
-});
+        res.status(500).json({
+          error: err.message
+        });
+      }
+  });
 
 module.exports = router;
