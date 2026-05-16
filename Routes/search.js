@@ -881,7 +881,8 @@ router.get("/search", async (req, res) => {
       )
 
         .sort({
-          shopifyCreatedAt: -1
+          score: -1,
+          createdAt: -1
         })
 
         .limit(10)
