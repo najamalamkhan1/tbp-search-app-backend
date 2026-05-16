@@ -1130,68 +1130,6 @@ router.get("/trending-brands", async (req, res) => {
     });
 
     // =========================
-    // ANALYTICS DATA
-    // =========================
-
-    const analyticsData =
-
-      await Analytics.aggregate([
-
-        {
-          $match: {
-            store:
-              new RegExp(
-                `^${store}$`,
-                "i"
-              ),
-            vendor: {
-              $exists: true,
-              $ne: null
-            }
-          }
-        },
-
-        {
-          $group: {
-
-            _id: "$vendor",
-
-            searches: {
-              $sum: {
-                $cond: [
-                  {
-                    $eq: [
-                      "$type",
-                      "search"
-                    ]
-                  },
-                  1,
-                  0
-                ]
-              }
-            },
-
-            clicks: {
-              $sum: {
-                $cond: [
-                  {
-                    $eq: [
-                      "$type",
-                      "click"
-                    ]
-                  },
-                  1,
-                  0
-                ]
-              }
-            }
-
-          }
-        }
-
-      ]);
-
-    // =========================
     // ANALYTICS MAP
     // =========================
 
