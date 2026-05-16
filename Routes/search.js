@@ -1575,37 +1575,38 @@ router.get("/trending", async (req, res) => {
                   query: `
                   {
                     products(
-                      first: 50,
-                      sortKey: CREATED_AT,
-                      reverse: true
-                    ) {
+  first: 50,
+  sortKey: CREATED_AT,
+  reverse: true,
+  query: "status:active"
+) {
 
                       edges {
 
                         node {
+  id
+  title
+  handle
+  createdAt
+  publishedAt
+  status
 
-                          id
-                          title
-                          handle
-                          createdAt
+  images(first: 1) {
+    edges {
+      node {
+        url
+      }
+    }
+  }
 
-                          images(first: 1) {
-                            edges {
-                              node {
-                                url
-                              }
-                            }
-                          }
-
-                          variants(first: 1) {
-                            edges {
-                              node {
-                                price
-                              }
-                            }
-                          }
-
-                        }
+  variants(first: 1) {
+    edges {
+      node {
+        price
+      }
+    }
+  }
+}
 
                       }
 
@@ -1621,265 +1622,249 @@ router.get("/trending", async (req, res) => {
 
           const data =
             await response.json();
-          console.log(
-            "SHOPIFY RESPONSE:",
-            JSON.stringify(data, null, 2)
           );
-          return (
+    return (
 
-            data?.data?.products?.edges?.map(item => {
+      data?.data?.products?.edges?.map(item => {
 
-              const node =
-                item.node;
-
-              return {
-
-                id:
-                  node.id,
-
-                title:
-                  node.title || "",
-
-                handle:
-                  node.handle || "",
-
-                createdAt:
-                  node.createdAt || null,
-
-                timestamp:
-                  new Date(
-                    node.createdAt || 0
-                  ).getTime(),
-
-                image:
-                  node.images
-                    ?.edges?.[0]
-                    ?.node?.url || "",
-
-                price:
-                  node.variants
-                    ?.edges?.[0]
-                    ?.node?.price || "0",
-
-                store:
-                  cleanDomain,
-
-              };
-
-            }) || []
-
-          );
-
-        } catch (err) {
-
-          console.log(
-            "TRENDING ERROR:",
-            store.domain
-          );
-
-          return [];
-
-        }
-
-      });
-
-    // =========================
-    // RESULTS
-    // =========================
-
-    const results =
-      await Promise.all(
-        promises
-      );
-
-    // =========================
-    // ANALYTICS DATA
-    // =========================
-
-    const analyticsData =
-
-      await Analytics.aggregate([
-
-        {
-          $match: {
-
-            store:
-              new RegExp(
-                `^${store}$`,
-                "i"
-              ),
-
-            productId: {
-              $exists: true,
-              $ne: null
-            }
-
-          }
-        },
-
-        {
-          $group: {
-
-            _id: "$productId",
-
-            clicks: {
-              $sum: {
-                $cond: [
-                  {
-                    $eq: [
-                      "$type",
-                      "click"
-                    ]
-                  },
-                  1,
-                  0
-                ]
-              }
-            },
-
-            searches: {
-              $sum: {
-                $cond: [
-                  {
-                    $eq: [
-                      "$type",
-                      "search"
-                    ]
-                  },
-                  1,
-                  0
-                ]
-              }
-            }
-
-          }
-
-        }
-
-      ]);
-
-    // =========================
-    // ANALYTICS MAP
-    // =========================
-
-    const analyticsMap = {};
-
-    analyticsData.forEach(a => {
-
-      analyticsMap[
-        a._id
-      ] = a;
-
-    });
-
-    // =========================
-    // PRODUCTS
-    // =========================
-
-    const products =
-      results.flat();
-
-    // =========================
-    // SCORE PRODUCTS
-    // =========================
-
-    const scoredProducts =
-
-      products.map(product => {
-
-        let score = 0;
-
-        // =========================
-        // ANALYTICS SCORE
-        // =========================
-
-        const analytics =
-
-          analyticsMap[
-          product.id
-          ];
-
-        if (analytics) {
-
-          // CLICK BOOST
-
-          score +=
-            analytics.clicks * 1000;
-
-          // SEARCH BOOST
-
-          score +=
-            analytics.searches * 300;
-
-        }
-
-        // =========================
-        // RECENCY BOOST
-        // =========================
-
-        const daysOld =
-
-          (
-            Date.now() -
-            product.timestamp
-          ) /
-
-          (1000 * 60 * 60 * 24);
-
-        if (daysOld <= 7) {
-
-          score += 5000;
-
-        } else if (
-          daysOld <= 30
-        ) {
-
-          score += 3000;
-
-        }
+        const node =
+          item.node;
 
         return {
 
-          ...product,
+          id:
+            node.id,
 
-          score
+          title:
+            node.title || "",
+
+          handle:
+            node.handle || "",
+
+          createdAt:
+            node.createdAt || null,
+          publishedAt: node.publishedAt,
+          status: node.status,
+          timestamp:
+            new Date(
+              node.createdAt || 0
+            ).getTime(),
+
+          image:
+            node.images
+              ?.edges?.[0]
+              ?.node?.url || "",
+
+          price:
+            node.variants
+              ?.edges?.[0]
+              ?.node?.price || "0",
+
+          store:
+            cleanDomain,
 
         };
 
-      });
+      }) || []
 
-    // =========================
-    // FINAL PRODUCTS
-    // =========================
-
-    const trendingProducts =
-
-      scoredProducts
-
-        .sort((a, b) =>
-
-          b.score - a.score
-
-        )
-
-        .slice(0, 12);
-
-    // =========================
-    // RESPONSE
-    // =========================
-
-    res.json(
-      trendingProducts
     );
 
   } catch (err) {
 
-    console.error("TRENDING PRODUCTS ERROR:", err);
+    console.log(
+      "TRENDING ERROR:",
+      store.domain
+    );
 
-    res.status(500).json({
-      error: err.message
-    });
+    return [];
+
   }
+
+});
+
+// =========================
+// RESULTS
+// =========================
+
+const results =
+  await Promise.all(
+    promises
+  );
+
+// =========================
+// ANALYTICS DATA
+// =========================
+
+const analyticsData =
+
+  await Analytics.aggregate([
+
+    {
+      $match: {
+
+        store:
+          new RegExp(
+            `^${store}$`,
+            "i"
+          ),
+
+        productId: {
+          $exists: true,
+          $ne: null
+        }
+
+      }
+    },
+
+    {
+      $group: {
+
+        _id: "$productId",
+
+        clicks: {
+          $sum: {
+            $cond: [
+              {
+                $eq: [
+                  "$type",
+                  "click"
+                ]
+              },
+              1,
+              0
+            ]
+          }
+        },
+
+        searches: {
+          $sum: {
+            $cond: [
+              {
+                $eq: [
+                  "$type",
+                  "search"
+                ]
+              },
+              1,
+              0
+            ]
+          }
+        }
+
+      }
+
+    }
+
+  ]);
+
+// =========================
+// ANALYTICS MAP
+// =========================
+
+const analyticsMap = {};
+
+analyticsData.forEach(a => {
+
+  analyticsMap[
+    a._id
+  ] = a;
+
+});
+
+// =========================
+// PRODUCTS
+// =========================
+
+const products = results
+  .flat()
+  .filter(p =>
+    p.status === "ACTIVE" &&
+    p.publishedAt
+  );
+
+// =========================
+// SCORE PRODUCTS
+// =========================
+const scoredProducts =
+  products.map(product => {
+    let score = 0;
+
+    // =========================
+    // ANALYTICS SCORE
+    // =========================
+    const analytics =
+      analyticsMap[
+      product.id
+      ];
+
+    if (analytics) {
+
+      // CLICK BOOST
+      score +=
+        analytics.clicks * 3000;
+
+      // SEARCH BOOST
+      score +=
+        analytics.searches * 1200;
+
+      // LOW ENGAGEMENT PENALTY
+      if (
+        analytics.clicks < 2 &&
+        analytics.searches < 2
+      ) {
+        score -= 1000;
+      }
+
+    }
+
+    // =========================
+    // RECENCY BOOST
+    // =========================
+    const daysOld =
+      (
+        Date.now() -
+        product.timestamp
+      ) / (1000 * 60 * 60 * 24);
+    if (daysOld <= 3) {
+      score += 800;
+    } else if (daysOld <= 7) {
+      score += 500;
+    } else if (daysOld <= 30) {
+      score += 200;
+    }
+    return {
+      ...product,
+      score
+    };
+  });
+
+// =========================
+// FINAL PRODUCTS
+// =========================
+
+const trendingProducts =
+  scoredProducts
+    .sort((a, b) =>
+      b.score - a.score
+    )
+    .slice(0, 12);
+
+// =========================
+// RESPONSE
+// =========================
+
+res.json(
+  trendingProducts
+);
+
+  } catch (err) {
+
+  console.error("TRENDING PRODUCTS ERROR:", err);
+
+  res.status(500).json({
+    error: err.message
+  });
+}
 });
 
 module.exports = router;
