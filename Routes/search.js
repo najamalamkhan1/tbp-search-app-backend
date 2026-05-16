@@ -1722,16 +1722,19 @@ router.get("/trending", async (req, res) => {
     // =========================
     // SCORE PRODUCTS
     // =========================
+
     const scoredProducts =
       products.map(product => {
+
         let score = 0;
 
         // =========================
         // ANALYTICS SCORE
         // =========================
+
         const analytics =
           analyticsMap[
-          product.id
+            product.id
           ];
 
         if (analytics) {
@@ -1754,15 +1757,15 @@ router.get("/trending", async (req, res) => {
 
         }
 
+        // =========================
+        // RECENCY BOOST
+        // =========================
+
         const daysOld =
           (
             Date.now() -
             product.timestamp
           ) / (1000 * 60 * 60 * 24);
-
-        // =========================
-        // RECENCY BOOST
-        // =========================
 
         if (daysOld <= 3) {
 
@@ -1786,33 +1789,49 @@ router.get("/trending", async (req, res) => {
 
         }
 
-        // =========================
-        // FINAL PRODUCTS
-        // =========================
+        return {
 
-        const trendingProducts =
-          scoredProducts
-            .sort((a, b) =>
-              b.score - a.score
-            )
-            .slice(0, 12);
+          ...product,
+          score
 
-        // =========================
-        // RESPONSE
-        // =========================
+        };
 
-        res.json(
-          trendingProducts
-        );
+      });
 
-      } catch (err) {
+    // =========================
+    // FINAL PRODUCTS
+    // =========================
 
-        console.error("TRENDING PRODUCTS ERROR:", err);
+    const trendingProducts =
+      scoredProducts
 
-        res.status(500).json({
-          error: err.message
-        });
-      }
-  });
+        .sort((a, b) =>
+          b.score - a.score
+        )
+
+        .slice(0, 12);
+
+    // =========================
+    // RESPONSE
+    // =========================
+
+    res.json(
+      trendingProducts
+    );
+
+  } catch (err) {
+
+    console.error(
+      "TRENDING PRODUCTS ERROR:",
+      err
+    );
+
+    res.status(500).json({
+      error: err.message
+    });
+
+  }
+
+});
 
 module.exports = router;
