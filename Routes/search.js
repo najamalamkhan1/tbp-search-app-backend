@@ -386,16 +386,15 @@ router.get("/search", async (req, res) => {
     // =========================
     let products =
       await Product.find({
-
         store: cleanStore,
-
         status: "ACTIVE",
-
         $and: searchConditions
-
       })
-
-        .limit(40)
+        .sort({
+          shopifyCreatedAt: -1,
+          createdAt: -1
+        })
+        .limit(80)
 
         .lean()
         .select(`
@@ -704,10 +703,10 @@ router.get("/search", async (req, res) => {
             latestDate:
 
               latestProduct
-                ?.createdAt ||
+                ?.shopifyCreatedAt ||
 
               latestProduct
-                ?.shopifyCreatedAt ||
+                ?.createdAt ||
 
               0,
 
@@ -790,11 +789,11 @@ router.get("/search", async (req, res) => {
         },
 
         {
-          searchableText: {
-            $regex:
-              normalizedQuery,
-            $options: "i"
-          }
+          searchableText:
+            `
+    ${collection.title}
+    ${collection.handle}
+  `.toLowerCase()
         },
       ];
 
@@ -896,12 +895,15 @@ router.get("/search", async (req, res) => {
           [...relatedProducts].sort((a, b) =>
 
             new Date(
-              b.shopifyCreatedAt || 0
+              b.shopifyCreatedAt ||
+              b.createdAt ||
+              0
             ) -
 
             new Date(
+              a.shopifyCreatedAt ||
               a.createdAt ||
-              a.shopifyCreatedAt
+              0
             )
 
           )[0];
@@ -1065,11 +1067,15 @@ router.get("/search", async (req, res) => {
             return (
 
               new Date(
-                b.shopifyCreatedAt || 0
+                b.shopifyCreatedAt ||
+                b.createdAt ||
+                0
               ) -
 
               new Date(
-                a.shopifyCreatedAt || 0
+                a.shopifyCreatedAt ||
+                a.createdAt ||
+                0
               )
 
             );
@@ -1511,20 +1517,6 @@ router.get("/trending-brands", async (req, res) => {
           latestProduct?.updatedAt ||
           latestProduct?.createdAt
         ) {
-
-          const daysOld =
-
-            (
-              Date.now() -
-
-              new Date(
-                latestProduct.updatedAt ||
-                latestProduct.createdAt
-              )
-
-            ) /
-
-            (1000 * 60 * 60 * 24);
 
           if (daysOld <= 1) {
 
