@@ -1052,7 +1052,7 @@ router.get("/trending-brands", async (req, res) => {
   try {
 
     // =========================
-    // STORES
+    // STORE
     // =========================
 
     const { store } =
@@ -1062,8 +1062,7 @@ router.get("/trending-brands", async (req, res) => {
 
       return res.status(400)
         .json({
-          error:
-            "Store is required"
+          error: "Store is required"
         });
 
     }
@@ -1075,11 +1074,15 @@ router.get("/trending-brands", async (req, res) => {
         .trim()
         .toLowerCase();
 
-    const stores =
+    // =========================
+    // STORES
+    // =========================
+
+    const allStores =
       await Store.find().lean();
 
     const matchedStores =
-      stores.filter(s => {
+      allStores.filter(s => {
 
         const dbDomain =
           s.domain
@@ -1094,15 +1097,16 @@ router.get("/trending-brands", async (req, res) => {
 
     if (!matchedStores.length) {
 
-      return res.json({
+      return res.status(404).json({
         error: "No matching store found",
-        cleanStore,
-        dbStores: stores.map(s => s.domain)
+        cleanStore
       });
 
     }
 
+    // =========================
     // FEATURED BRANDS
+    // =========================
 
     const featuredBrands =
       await FeaturedBrand.find({
@@ -1110,12 +1114,16 @@ router.get("/trending-brands", async (req, res) => {
         store: cleanStore
       }).lean();
 
-    // FEATURED MAP
     const featuredMap = {};
+
     featuredBrands.forEach(f => {
+
+      if (!f?.title) return;
+
       featuredMap[
-        f.title?.toLowerCase()
+        f.title.toLowerCase()
       ] = f;
+
     });
 
     // =========================
@@ -1123,7 +1131,6 @@ router.get("/trending-brands", async (req, res) => {
     // =========================
 
     const analyticsData =
-
       await Analytics.aggregate([
 
         {
@@ -1176,15 +1183,11 @@ router.get("/trending-brands", async (req, res) => {
 
       ]);
 
-    // =========================
-    // ANALYTICS MAP
-    // =========================
-
     const analyticsMap = {};
 
     analyticsData.forEach(a => {
 
-      if (!a._id) return;
+      if (!a?._id) return;
 
       analyticsMap[
         a._id.toLowerCase()
@@ -1203,10 +1206,15 @@ router.get("/trending-brands", async (req, res) => {
 
           try {
 
+            const cleanDomain =
+              store.domain
+                ?.replace(/^https?:\/\//, "")
+                .replace(/\/$/, "");
+
             const response =
               await fetch(
 
-                `https://${store.domain}/admin/api/2024-01/graphql.json`,
+                `https://${cleanDomain}/admin/api/2024-01/graphql.json`,
 
                 {
                   method: "POST",
@@ -1224,7 +1232,7 @@ router.get("/trending-brands", async (req, res) => {
                     query: `
 {
   products(
-    first: 50,
+    first: 60,
     sortKey: UPDATED_AT,
     reverse: true,
     query: "status:active"
@@ -1234,9 +1242,11 @@ router.get("/trending-brands", async (req, res) => {
 
       node {
 
+        id
         vendor
         title
         handle
+
         createdAt
         updatedAt
         publishedAt
@@ -1264,7 +1274,7 @@ router.get("/trending-brands", async (req, res) => {
 
   }
 }
-                `,
+                    `,
 
                   }),
                 }
@@ -1273,9 +1283,25 @@ router.get("/trending-brands", async (req, res) => {
             const data =
               await response.json();
 
+            if (
+              data?.errors
+            ) {
+
+              console.log(
+                "SHOPIFY GRAPHQL ERROR:",
+                data.errors
+              );
+
+              return [];
+
+            }
+
             return (
 
               data?.data?.products?.edges?.map(p => ({
+
+                id:
+                  p.node.id || "",
 
                 title:
                   p.node.title || "",
@@ -1289,14 +1315,14 @@ router.get("/trending-brands", async (req, res) => {
                 createdAt:
                   p.node.createdAt || null,
 
+                updatedAt:
+                  p.node.updatedAt || null,
+
                 publishedAt:
                   p.node.publishedAt || null,
 
                 status:
                   p.node.status || "",
-
-                updatedAt:
-                  p.node.updatedAt || null,
 
                 timestamp:
                   new Date(
@@ -1339,12 +1365,14 @@ router.get("/trending-brands", async (req, res) => {
     // PRODUCTS
     // =========================
 
-    let products =
+    const products =
       results
         .flat()
         .filter(p =>
+
           p.status === "ACTIVE" &&
           p.publishedAt
+
         );
 
     // =========================
@@ -1364,14 +1392,9 @@ router.get("/trending-brands", async (req, res) => {
 
         brandMap[vendor] = {
 
-          title:
-            vendor,
-
+          title: vendor,
           products: [],
-
-          latestDate:
-            product.createdAt,
-
+          latestDate: null,
           score: 0
 
         };
@@ -1390,17 +1413,24 @@ router.get("/trending-brands", async (req, res) => {
 
     Object.values(brandMap)
       .forEach(brand => {
+
         const latestProduct =
+
           [...brand.products]
+
             .sort((a, b) =>
+
               b.timestamp -
               a.timestamp
+
             )[0];
 
         // =========================
         // LATEST DATE
         // =========================
+
         brand.latestDate =
+
           latestProduct?.updatedAt ||
           latestProduct?.createdAt ||
           null;
@@ -1408,6 +1438,7 @@ router.get("/trending-brands", async (req, res) => {
         // =========================
         // BASE SCORE
         // =========================
+
         brand.score +=
           Math.min(
             brand.products.length * 100,
@@ -1417,17 +1448,21 @@ router.get("/trending-brands", async (req, res) => {
         // =========================
         // ANALYTICS BOOST
         // =========================
+
         const analyticsBrand =
+
           analyticsMap[
-          brand.title.toLowerCase()
+            brand.title?.toLowerCase()
           ];
+
         if (analyticsBrand) {
-          // SEARCH BOOST
+
           brand.score +=
             analyticsBrand.searches * 120;
 
           brand.score +=
             analyticsBrand.clicks * 250;
+
         }
 
         // =========================
@@ -1443,11 +1478,15 @@ router.get("/trending-brands", async (req, res) => {
 
             (
               Date.now() -
+
               new Date(
                 latestProduct.updatedAt ||
                 latestProduct.createdAt
               )
-            ) / (1000 * 60 * 60 * 24);
+
+            ) /
+
+            (1000 * 60 * 60 * 24);
 
           if (daysOld <= 1) {
 
@@ -1476,65 +1515,97 @@ router.get("/trending-brands", async (req, res) => {
         // =========================
         // FEATURED BOOST
         // =========================
+
         const featured =
+
           featuredMap[
-          brand.title?.toLowerCase()
+            brand.title?.toLowerCase()
           ];
+
         if (featured) {
+
           brand.score +=
             30000 +
             (featured.priority || 0);
+
         }
+
       });
 
     // =========================
     // FINAL BRANDS
     // =========================
+
     const brands =
+
       Object.values(brandMap)
+
         .sort((a, b) =>
+
           b.score - a.score
+
         )
+
         .slice(0, 10)
+
         .map(b => ({
+
           title:
             b.title,
+
           score:
             b.score,
+
           latestDate:
             b.latestDate,
+
           totalProducts:
             b.products.length
+
         }));
 
     // =========================
     // TRENDING PRODUCTS
     // =========================
+
     const trendingProducts =
+
       [...products]
+
         .sort((a, b) =>
+
           b.timestamp -
           a.timestamp
+
         )
+
         .slice(0, 80);
 
     // =========================
     // RESPONSE
     // =========================
+
     res.json({
+
       brands,
       products:
         trendingProducts
+
     });
+
   } catch (err) {
+
     console.error(
       "TRENDING BRANDS ERROR:",
       err
     );
+
     res.status(500).json({
       error: err.message
     });
+
   }
+
 });
 
 router.get("/trending", async (req, res) => {
@@ -1546,16 +1617,17 @@ router.get("/trending", async (req, res) => {
     // =========================
 
     const { store } = req.query;
+
     if (!store) {
-      return res.status(400)
-        .json({
-          error:
-            "Store is required"
-        });
+
+      return res.status(400).json({
+        error: "Store is required"
+      });
+
     }
 
     // =========================
-    // STORES
+    // CLEAN STORE
     // =========================
 
     const cleanStore = store
@@ -1564,184 +1636,219 @@ router.get("/trending", async (req, res) => {
       .trim()
       .toLowerCase();
 
-    const stores =
+    // =========================
+    // MATCH STORE
+    // =========================
+
+    const matchedStores =
       await Store.find({
-        domain: new RegExp(
-          `^${cleanStore}$`,
-          "i"
-        )
+        domain: {
+          $regex: new RegExp(
+            `^${cleanStore}$`,
+            "i"
+          )
+        }
       }).lean();
+
+    if (!matchedStores.length) {
+
+      return res.json([]);
+
+    }
 
     // =========================
     // FETCH PRODUCTS
     // =========================
 
-    const promises =
-
-      matchedStores.map(async store => {
-
-        try {
-
-          const cleanDomain =
-            store.domain.replace(
-              /\/$/,
-              ""
-            );
-
-          const response =
-            await fetch(
-
-              `https://${cleanDomain}/admin/api/2024-01/graphql.json`,
-
-              {
-                method: "POST",
-
-                headers: {
-
-                  "X-Shopify-Access-Token":
-                    store.accessToken,
-
-                  "Content-Type":
-                    "application/json",
-
-                },
-
-                body: JSON.stringify({
-
-                  query: `
-                  {
-                    products(
-  first: 60,
-  sortKey: UPDATED_AT,
-  reverse: true,
-  query: "status:active"
-) {
-
-                      edges {
-
-                        node {
-  id
-  title
-  handle
-  createdAt
-  publishedAt
-  status
-
-  images(first: 1) {
-    edges {
-      node {
-        url
-      }
-    }
-  }
-
-  variants(first: 1) {
-    edges {
-      node {
-        price
-      }
-    }
-  }
-}
-
-                      }
-
-                    }
-                  }
-                  `,
-
-                }),
-
-              }
-
-            );
-
-          const data =
-            await response.json();
-          return (
-
-            data?.data?.products?.edges?.map(item => {
-
-              const node =
-                item.node;
-
-              return {
-
-                id:
-                  node.id,
-
-                title:
-                  node.title || "",
-
-                handle:
-                  node.handle || "",
-
-                createdAt:
-                  node.createdAt || null,
-                publishedAt: node.publishedAt,
-                status: node.status,
-                timestamp:
-                  new Date(
-                    node.createdAt || 0
-                  ).getTime(),
-
-                image:
-                  node.images
-                    ?.edges?.[0]
-                    ?.node?.url || "",
-
-                price:
-                  node.variants
-                    ?.edges?.[0]
-                    ?.node?.price || "0",
-
-                store:
-                  cleanDomain,
-
-              };
-
-            }) || []
-
-          );
-
-        } catch (err) {
-
-          console.log(
-            "TRENDING ERROR:",
-            store.domain
-          );
-
-          return [];
-
-        }
-
-      });
-
-    // =========================
-    // RESULTS
-    // =========================
-
     const results =
       await Promise.all(
-        promises
+
+        matchedStores.map(async (shopStore) => {
+
+          try {
+
+            const cleanDomain =
+              shopStore.domain
+                .replace(/^https?:\/\//, "")
+                .replace(/\/$/, "");
+
+            const response =
+              await fetch(
+
+                `https://${cleanDomain}/admin/api/2024-01/graphql.json`,
+
+                {
+                  method: "POST",
+
+                  headers: {
+
+                    "X-Shopify-Access-Token":
+                      shopStore.accessToken,
+
+                    "Content-Type":
+                      "application/json",
+
+                  },
+
+                  body: JSON.stringify({
+
+                    query: `
+                    {
+                      products(
+                        first: 60,
+                        sortKey: UPDATED_AT,
+                        reverse: true,
+                        query: "status:active"
+                      ) {
+
+                        edges {
+
+                          node {
+
+                            id
+                            title
+                            handle
+                            vendor
+                            createdAt
+                            updatedAt
+                            publishedAt
+                            status
+
+                            images(first: 1) {
+                              edges {
+                                node {
+                                  url
+                                }
+                              }
+                            }
+
+                            variants(first: 1) {
+                              edges {
+                                node {
+                                  price
+                                }
+                              }
+                            }
+
+                          }
+
+                        }
+
+                      }
+                    }
+                    `,
+
+                  }),
+
+                }
+
+              );
+
+            const data =
+              await response.json();
+
+            // =========================
+            // GRAPHQL ERROR DEBUG
+            // =========================
+
+            if (data?.errors) {
+
+              console.error(
+                "SHOPIFY GRAPHQL ERROR:",
+                cleanDomain,
+                data.errors
+              );
+
+              return [];
+
+            }
+
+            return (
+
+              data?.data?.products?.edges?.map(item => {
+
+                const node =
+                  item.node;
+
+                return {
+
+                  id:
+                    node.id || "",
+
+                  title:
+                    node.title || "",
+
+                  handle:
+                    node.handle || "",
+
+                  vendor:
+                    node.vendor || "",
+
+                  createdAt:
+                    node.createdAt || null,
+
+                  updatedAt:
+                    node.updatedAt || null,
+
+                  publishedAt:
+                    node.publishedAt || null,
+
+                  status:
+                    node.status || "",
+
+                  timestamp:
+                    new Date(
+                      node.updatedAt ||
+                      node.createdAt ||
+                      0
+                    ).getTime(),
+
+                  image:
+                    node.images
+                      ?.edges?.[0]
+                      ?.node?.url || "",
+
+                  price:
+                    node.variants
+                      ?.edges?.[0]
+                      ?.node?.price || "0",
+
+                  store:
+                    cleanDomain,
+
+                };
+
+              }) || []
+
+            );
+
+          } catch (err) {
+
+            console.error(
+              "TRENDING FETCH ERROR:",
+              shopStore.domain,
+              err.message
+            );
+
+            return [];
+
+          }
+
+        })
+
       );
 
     // =========================
-    // ANALYTICS DATA
+    // ANALYTICS
     // =========================
 
     const analyticsData =
-
       await Analytics.aggregate([
 
         {
           $match: {
 
-            store:
-              new RegExp(
-                `^${store}$`,
-                "i"
-              ),
+            store: cleanStore,
 
             productId: {
               $exists: true,
@@ -1798,11 +1905,9 @@ router.get("/trending", async (req, res) => {
 
     const analyticsMap = {};
 
-    analyticsData.forEach(a => {
+    analyticsData.forEach(item => {
 
-      analyticsMap[
-        a._id
-      ] = a;
+      analyticsMap[item._id] = item;
 
     });
 
@@ -1810,12 +1915,42 @@ router.get("/trending", async (req, res) => {
     // PRODUCTS
     // =========================
 
-    let products = results
-      .flat()
-      .filter(p =>
-        p.status === "ACTIVE" &&
-        p.publishedAt
-      );
+    let products =
+      results
+        .flat()
+        .filter(product => {
+
+          return (
+            product.status === "ACTIVE" &&
+            product.publishedAt &&
+            product.handle
+          );
+
+        });
+
+    // =========================
+    // REMOVE DUPLICATES
+    // =========================
+
+    const uniqueMap = new Map();
+
+    products.forEach(product => {
+
+      if (
+        !uniqueMap.has(product.id)
+      ) {
+
+        uniqueMap.set(
+          product.id,
+          product
+        );
+
+      }
+
+    });
+
+    products =
+      [...uniqueMap.values()];
 
     // =========================
     // SCORE PRODUCTS
@@ -1832,25 +1967,27 @@ router.get("/trending", async (req, res) => {
 
         const analytics =
           analyticsMap[
-          product.id
+            product.id
           ];
 
         if (analytics) {
 
           // CLICK BOOST
           score +=
-            analytics.clicks * 3000;
+            (analytics.clicks || 0) * 3000;
 
           // SEARCH BOOST
           score +=
-            analytics.searches * 1200;
+            (analytics.searches || 0) * 1200;
 
           // LOW ENGAGEMENT PENALTY
           if (
-            analytics.clicks < 2 &&
-            analytics.searches < 2
+            (analytics.clicks || 0) < 2 &&
+            (analytics.searches || 0) < 2
           ) {
+
             score -= 1000;
+
           }
 
         }
