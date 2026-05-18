@@ -38,7 +38,7 @@ router.post("/store/add", async (req, res) => {
       accessToken,
     });
 
-        res.json({
+    res.json({
       success: true,
       store: newStore,
     });

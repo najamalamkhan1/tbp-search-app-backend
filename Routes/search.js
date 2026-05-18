@@ -9,8 +9,6 @@ const Product = require("../Models/productModel")
 const Collection = require("../Models/collectionModel");
 const FeaturedBrand = require("../Models/featuredBrandsModel");
 
-const SHOPIFY_URL = `${process.env.SHOPIFY_STORE_URL}/api/graphql.json`;
-
 // POST /api/stores/add
 
 router.post("/stores/add", async (req, res) => {
@@ -36,7 +34,7 @@ router.post("/stores/add", async (req, res) => {
 const vendorCache = {};
 
 const CACHE_TIME =
-  1000 * 60 * 10; // 10 min
+  1000 * 60 * 2 // 10 min
 
 router.get("/search", async (req, res) => {
 
@@ -581,31 +579,16 @@ router.get("/search", async (req, res) => {
           (1000 * 60 * 60 * 24)
           : 9999;
 
-      const daysOld =
-        (
-          Date.now() -
-          created.getTime()
-        ) /
-        (1000 * 60 * 60 * 24);
-
       // 2026 / NEWEST PRODUCTS
       // VERY NEW
       if (daysOld <= 3) {
-
-        score += 120000;
-
-      } else if (daysOld <= 7) {
-
-        score += 80000;
-
-      } else if (daysOld <= 30) {
-
         score += 30000;
-
-      } else if (daysOld <= 90) {
-
+      } else if (daysOld <= 7) {
+        score += 20000;
+      } else if (daysOld <= 30) {
         score += 10000;
-
+      } else if (daysOld <= 90) {
+        score += 3000;
       }
 
       return {
@@ -789,11 +772,10 @@ router.get("/search", async (req, res) => {
         },
 
         {
-          searchableText:
-            `
-    ${collection.title}
-    ${collection.handle}
-  `.toLowerCase()
+          searchableText: {
+            $regex: normalizedQuery,
+            $options: "i"
+          }
         },
       ];
 
@@ -1279,7 +1261,7 @@ router.get("/trending-brands", async (req, res) => {
 {
   products(
     first: 60,
-    sortKey: UPDATED_AT,
+    sortKey: CREATED_AT,
     reverse: true,
     query: "status:active"
   ) {
@@ -1370,9 +1352,7 @@ router.get("/trending-brands", async (req, res) => {
 
                 timestamp:
                   new Date(
-                    p.node.updatedAt ||
-                    p.node.createdAt ||
-                    0
+                    p.node.createdAt || 0
                   ).getTime(),
 
                 image:
@@ -1474,10 +1454,7 @@ router.get("/trending-brands", async (req, res) => {
         // =========================
 
         brand.latestDate =
-
-          latestProduct?.updatedAt ||
-          latestProduct?.createdAt ||
-          null;
+          latestProduct?.createdAt || null;
 
         // =========================
         // BASE SCORE
@@ -1513,35 +1490,30 @@ router.get("/trending-brands", async (req, res) => {
         // RECENCY BOOST
         // =========================
 
-        if (
-          latestProduct?.updatedAt ||
-          latestProduct?.createdAt
-        ) {
+        if (latestProduct?.createdAt) {
+
+          const latestDate =
+            latestProduct.createdAt;
+
+          const daysOld =
+            (
+              Date.now() -
+              new Date(latestDate).getTime()
+            ) /
+            (1000 * 60 * 60 * 24);
 
           if (daysOld <= 1) {
-
             brand.score += 20000;
-
           } else if (daysOld <= 3) {
-
             brand.score += 15000;
-
           } else if (daysOld <= 7) {
-
             brand.score += 10000;
-
           } else if (daysOld <= 30) {
-
             brand.score += 5000;
-
           } else if (daysOld <= 90) {
-
             brand.score += 1000;
-
           }
-
         }
-
         // =========================
         // FEATURED BOOST
         // =========================
@@ -1726,7 +1698,7 @@ router.get("/trending", async (req, res) => {
                     {
                       products(
                         first: 60,
-                        sortKey: UPDATED_AT,
+                        sortKey: CREATED_AT,
                         reverse: true,
                         query: "status:active"
                       ) {
@@ -1814,11 +1786,6 @@ router.get("/trending", async (req, res) => {
                   vendor:
                     node.vendor || "",
 
-                  createdAt: node.createdAt || null,
-                  timestamp: new Date(
-                    node.createdAt || 0
-                  ).getTime(),
-
                   updatedAt:
                     node.updatedAt || null,
 
@@ -1830,11 +1797,8 @@ router.get("/trending", async (req, res) => {
 
                   timestamp:
                     new Date(
-                      node.updatedAt ||
-                      node.createdAt ||
-                      0
+                      node.createdAt || 0
                     ).getTime(),
-
                   image:
                     node.images
                       ?.edges?.[0]
