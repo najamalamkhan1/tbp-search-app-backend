@@ -1823,62 +1823,56 @@ router.get("/trending", async (req, res) => {
 
             }
 
-            return (
+            const products =
+              data?.data?.products?.edges || [];
 
-              data?.data?.products?.edges?.map(item => {
+            return products.map(({ node }) => ({
 
-                const node =
-                  item.node;
+              id:
+                node?.id || "",
 
-                return {
+              title:
+                node?.title || "",
 
-                  id:
-                    node.id || "",
+              handle:
+                node?.handle || "",
 
-                  title:
-                    node.title || "",
+              vendor:
+                node?.vendor || "",
 
-                  handle:
-                    node.handle || "",
+              createdAt:
+                node?.createdAt || null,
 
-                  vendor:
-                    node.vendor || "",
+              updatedAt:
+                node?.updatedAt || null,
 
-                  updatedAt:
-                    node.updatedAt || null,
+              publishedAt:
+                node?.publishedAt || null,
 
-                  publishedAt:
-                    node.publishedAt || null,
+              status:
+                node?.status || "",
 
-                  status:
-                    node.status || "",
+              timestamp:
+                new Date(
+                  node?.publishedAt ||
+                  node?.createdAt ||
+                  0
+                ).getTime(),
 
-                  timestamp:
-                    new Date(
-                      node.publishedAt ||
-                      node.createdAt ||
-                      0
-                    ).getTime(),
+              image:
+                node?.images?.edges?.[0]
+                  ?.node?.url || "",
 
-                  image:
-                    node.images
-                      ?.edges?.[0]
-                      ?.node?.url || "",
+              price:
+                Number(
+                  node?.variants?.edges?.[0]
+                    ?.node?.price || 0
+                ),
 
-                  price:
-                    Number(
-                      node.variants?.edges?.[0]
-                        ?.node?.price || 0
-                    ),
+              store:
+                cleanDomain,
 
-                  store:
-                    cleanDomain,
-
-                };
-
-              }) || []
-
-            );
+            }));
 
           } catch (err) {
 
