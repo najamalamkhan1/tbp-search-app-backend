@@ -1282,12 +1282,12 @@ router.get("/trending-brands", async (req, res) => {
     const results =
       await Promise.all(
 
-        matchedStores.map(async store => {
+        matchedStores.map(async storeDoc => {
 
           try {
 
             const cleanDomain =
-              store.domain
+              storeDoc.domain
                 ?.replace(/^https?:\/\//, "")
                 .replace(/\/$/, "");
 
@@ -1301,7 +1301,7 @@ router.get("/trending-brands", async (req, res) => {
 
                   headers: {
                     "X-Shopify-Access-Token":
-                      store.accessToken,
+                      storeDoc.accessToken,
 
                     "Content-Type":
                       "application/json",
@@ -1428,7 +1428,7 @@ router.get("/trending-brands", async (req, res) => {
 
             console.error(
               "STORE FETCH ERROR:",
-              store.domain,
+              storeDoc.domain,
               err.message
             );
 
