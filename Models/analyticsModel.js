@@ -139,6 +139,25 @@ analyticsSchema.index({
   resultsCount: 1
 });
 
+analyticsSchema.index({
+  store: 1,
+  type: 1,
+  createdAt: -1,
+  normalizedQuery: 1
+});
+
+analyticsSchema.index({
+  store: 1,
+  productId: 1,
+  createdAt: -1
+});
+
+analyticsSchema.index({
+  store: 1,
+  device: 1,
+  createdAt: -1
+});
+
 module.exports =
   mongoose.model(
     "Analytics",
