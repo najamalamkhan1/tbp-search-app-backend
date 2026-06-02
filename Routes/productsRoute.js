@@ -60,13 +60,14 @@ query getProducts($cursor: String) {
 
   products(
     first: 250,
-    query:"status:active published_status:published",
+    query:"status:active",
     after: $cursor
   ) {
 
     pageInfo {
-      hasNextPage
-    }
+  hasNextPage
+  endCursor
+}
 
     edges {
 
@@ -97,7 +98,7 @@ query getProducts($cursor: String) {
           }
         }
 
-        collections(first: 10) {
+        collections(first: 50) {
   edges {
     node {
       id
@@ -114,27 +115,28 @@ query getProducts($cursor: String) {
       // =========================
       // 🔥 SHOPIFY API
       // =========================
-      const response = await fetch(
-        `https://${shop}/admin/api/2025-01/graphql.json`,
-        {
-          method: "POST",
+      const response =
+        await fetch(
+          `https://${shop}/admin/api/2025-01/graphql.json`,
+          {
+            method: "POST",
 
-          headers: {
-            "X-Shopify-Access-Token":
-              store.accessToken,
+            headers: {
+              "X-Shopify-Access-Token":
+                store.accessToken,
 
-            "Content-Type":
-              "application/json"
-          },
+              "Content-Type":
+                "application/json"
+            },
 
-          body: JSON.stringify({
-            query,
-            variables: {
-              cursor
-            }
-          })
-        }
-      );
+            body: JSON.stringify({
+              query,
+              variables: {
+                cursor
+              }
+            })
+          }
+        );
 
       if (response.status === 429) {
 
@@ -220,6 +222,13 @@ query getProducts($cursor: String) {
         products.map(item => {
           if (!item?.node) {
             return null;
+          }
+          if (
+            !p.publishedAt
+          ) {
+
+            return null;
+
           }
           const p = item.node;
           if (p.id) {
@@ -395,9 +404,8 @@ query getProducts($cursor: String) {
         );
 
       const nextCursor =
-        products[
-          products.length - 1
-        ]?.cursor || null;
+        data?.data?.products
+          ?.pageInfo?.endCursor || null;
       if (!nextCursor) {
         break;
       }
@@ -421,8 +429,8 @@ query getProducts($cursor: String) {
     // =========================
 
     if (
-      allProductIds.size > 0 &&
-      totalSynced > 0
+      allProductIds.size > 100 &&
+      totalSynced > 100
     ) {
 
       await Product.deleteMany({
@@ -487,16 +495,26 @@ router.post("/sync-collections", async (req, res) => {
     let collectionIds =
       new Set();
 
+    const rawCollections =
+      await Product.distinct(
+        "collections",
+        {
+          store:
+            normalizedShop,
+          status: "active"
+        }
+      );
+
     const activeCollections =
       new Set(
-        await Product.distinct(
-          "collections",
-          {
-            store:
-              normalizedShop,
-            status: "active"
-          }
+
+        rawCollections.map(id =>
+          String(id)
+            .split("/")
+            .pop()
+
         )
+
       );
 
     // ======================================
@@ -504,13 +522,19 @@ router.post("/sync-collections", async (req, res) => {
     // ======================================
     const fetchCollections =
       async (type) => {
-        let page = 1;
+
         let retryCount = 0;
         let hasMore = true;
+
+        let nextPageUrl =
+          `https://${normalizedShop}/admin/api/2025-01/${type}.json?limit=250`;
+
         while (hasMore) {
+
           const response =
             await fetch(
-              `https://${normalizedShop}/admin/api/2024-01/${type}.json?limit=250&page=${page}`,
+              nextPageUrl,
+
               {
                 headers: {
                   "X-Shopify-Access-Token":
@@ -520,23 +544,26 @@ router.post("/sync-collections", async (req, res) => {
                 }
               }
             );
-
           // ==============================
           // 🔥 RATE LIMIT
           // ==============================
-          if (
-            response.status === 429
-          ) {
+
+          if (response.status === 429) {
+
             retryCount++;
+
             console.log(
               `COLLECTION RATE LIMITED... RETRY ${retryCount}`
             );
+
             if (retryCount >= 5) {
+
               throw new Error(
                 "Collections rate limit exceeded"
               );
 
             }
+
             await new Promise(
               resolve =>
                 setTimeout(
@@ -544,16 +571,64 @@ router.post("/sync-collections", async (req, res) => {
                   2000 * retryCount
                 )
             );
+
             continue;
+
           }
+
           retryCount = 0;
+
           if (!response.ok) {
+
+            const errorText =
+              await response.text();
+
+            console.log(
+              "COLLECTION API ERROR:",
+              errorText
+            );
+
             throw new Error(
               `Collections API Failed: ${response.status}`
             );
+
           }
+
+          const linkHeader =
+            response.headers.get("link");
+
+          if (
+            linkHeader &&
+            linkHeader.includes('rel="next"')
+          ) {
+
+            const nextLink =
+              linkHeader
+                ?.split(",")
+                ?.find(link =>
+                  link.includes('rel="next"')
+                );
+
+            const match =
+              nextLink?.match(
+                /<([^>]+)>/
+              );
+
+            nextPageUrl =
+              match?.[1] || null;
+
+            hasMore =
+              !!nextPageUrl;
+
+          } else {
+
+            hasMore = false;
+
+          }
+
           const data =
             await response.json();
+
           const collections =
             Array.isArray(data[type])
               ? data[type]
@@ -562,106 +637,126 @@ router.post("/sync-collections", async (req, res) => {
           // ==============================
           // 🔥 STOP PAGINATION
           // ==============================
-          if (
-            collections.length === 0
-          ) {
+
+          if (collections.length === 0) {
+
             break;
-          }
-          if (
-            collections.length < 250
-          ) {
-            hasMore = false;
+
           }
 
           // ==============================
           // 🔥 PREPARE BULK OPS
           // ==============================
+
           const bulkOps =
-            (
-              await Promise.all(
-                collections.map(
-                  async c => {
-                    // ==============================
-                    // 🔥 CHECK ACTIVE PRODUCTS
-                    // ==============================
+            collections
+              .map(c => {
 
-                    if (
-                      !activeCollections.has(
+                // ONLY ACTIVE PRODUCTS
+                if (
+                  !activeCollections.has(
+                    String(c.id)
+                  )
+                ) {
+
+                  return null;
+
+                }
+
+                collectionIds.add(
+                  String(c.id)
+                );
+
+                return {
+
+                  updateOne: {
+
+                    filter: {
+
+                      store:
+                        normalizedShop,
+
+                      collectionId:
                         String(c.id)
-                      )
-                    ) {
 
-                      return null;
+                    },
 
-                    }
+                    update: {
 
-                    collectionIds.add(
-                      String(c.id)
-                    );
-                    return {
-                      updateOne: {
-                        filter: {
-                          store:
-                            normalizedShop,
-                          collectionId:
-                            String(c.id)
-                        },
-                        update: {
-                          $set: {
-                            store:
-                              normalizedShop,
-                            collectionId:
-                              String(c.id),
-                            title:
-                              c.title || "",
-                            handle:
-                              c.handle || "",
-                            description:
-                              String(
-                                c.body_html || ""
-                              )
-                                .replace(/<[^>]*>/g, "")
-                                .slice(0, 2000),
-                            image:
-                              c.image?.src || "",
-                            rules:
-                              c.rules || [],
-                            type,
-                            publishedAt:
+                      $set: {
+
+                        store:
+                          normalizedShop,
+
+                        collectionId:
+                          String(c.id),
+
+                        title:
+                          c.title || "",
+
+                        handle:
+                          c.handle || "",
+
+                        description:
+                          String(
+                            c.body_html || ""
+                          )
+                            .replace(/<[^>]*>/g, "")
+                            .slice(0, 2000),
+
+                        image:
+                          c.image?.src || "",
+
+                        rules:
+                          c.rules || [],
+
+                        type,
+
+                        publishedAt:
+                          c.published_at
+                            ? new Date(
                               c.published_at
-                                ? new Date(
-                                  c.published_at
-                                )
-                                : null
-                          }
-                        },
-                        upsert: true
+                            )
+                            : null
+
                       }
-                    };
+
+                    },
+
+                    upsert: true
+
                   }
-                )
-              )
-            ).filter(Boolean);
+
+                };
+
+              }).filter(Boolean);
 
           // ==============================
           // 🔥 BULK WRITE
           // ==============================
-          if (
-            bulkOps.length > 0
-          ) {
+
+          if (bulkOps.length > 0) {
+
             await Collection.bulkWrite(
               bulkOps,
               {
                 ordered: false
               }
             );
+
           }
+
           console.log(
-            `${type} page ${page} synced:`,
+            `${type} synced:`,
             bulkOps.length
           );
-          page++;
+
+          // ==============================
+          // 🔥 NEXT PAGE
+          // ==============================
+
         }
+
       };
 
     // ======================================
