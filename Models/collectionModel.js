@@ -31,6 +31,22 @@ const collectionSchema =
             default: ""
         },
 
+        description: {
+            type: String,
+            default: ""
+        },
+
+        rules: {
+            type: Array,
+            default: []
+        },
+
+        collectionType: {
+            type: String,
+            default: "",
+            index: true
+        },
+
         productsCount: {
             type: Number,
             default: 0,
@@ -45,6 +61,7 @@ const collectionSchema =
             type: Date,
             index: true
         },
+
         shopifyPublishedAt: {
             type: Date,
             index: true
@@ -141,6 +158,7 @@ collectionSchema.pre("save", function (next) {
       ${this.title}
       ${this.handle}
       ${this.vendor}
+      ${this.description}
     `.toLowerCase();
 
     next();

@@ -116,6 +116,11 @@ const productSchema =
       index: true
     },
 
+    shopifyPublishedAt: {
+      type: Date,
+      index: true
+    },
+
     publishedAt: {
       type: Date,
       index: true
@@ -126,7 +131,7 @@ const productSchema =
     // =========================
     status: {
       type: String,
-      default: "active",
+      default: "ACTIVE",
       index: true
     },
 
@@ -198,6 +203,12 @@ productSchema.index({
   store: 1,
   status: 1,
   publishedAt: -1
+});
+
+productSchema.index({
+  store: 1,
+  status: 1,
+  shopifyPublishedAt: -1
 });
 
 // ========================================

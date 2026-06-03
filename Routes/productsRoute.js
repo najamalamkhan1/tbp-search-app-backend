@@ -52,6 +52,7 @@ router.post("/sync-products", async (req, res) => {
     let retryCount = 0;
     // =========================
     let previousCursor = null;
+    let syncCompleted = false;
     // 🔥 LOOP ALL PRODUCTS
     // =========================
     while (hasNextPage) {
@@ -93,12 +94,11 @@ query getProducts($cursor: String) {
           edges {
             node {
               price
-              inventoryQuantity
             }
           }
         }
 
-        collections(first: 50) {
+        collections(first: 250) {
   edges {
     node {
       id
@@ -117,7 +117,7 @@ query getProducts($cursor: String) {
       // =========================
       const response =
         await fetch(
-          `https://${shop}/admin/api/2025-01/graphql.json`,
+          `https://${shop}/admin/api/2026-04/graphql.json`,
           {
             method: "POST",
 
@@ -168,6 +168,13 @@ query getProducts($cursor: String) {
       retryCount = 0;
 
       if (!response.ok) {
+        const errorText =
+          await response.text();
+
+        console.log(
+          "SHOPIFY PRODUCT API ERROR:",
+          errorText
+        );
 
         throw new Error(
           `Shopify API Failed: ${response.status}`
@@ -214,6 +221,7 @@ query getProducts($cursor: String) {
       ) {
 
         hasNextPage = false;
+        syncCompleted = true;
 
         break;
 
@@ -228,11 +236,7 @@ query getProducts($cursor: String) {
             return null;
           }
           const p = item.node;
-          if (
-            !p.publishedAt
-          ) {
-            return null;
-          }
+
           if (p.id) {
             allProductIds.add(
               String(p.id)
@@ -263,16 +267,6 @@ query getProducts($cursor: String) {
                 ?.node?.price || 0
             );
 
-          // STOCK
-          const stock =
-            Math.max(
-              0,
-              Number(
-                p.variants?.edges?.[0]
-                  ?.node
-                  ?.inventoryQuantity
-              ) || 0
-            );
           // SEARCHABLE TEXT
           const searchableText = [
 
@@ -349,16 +343,15 @@ query getProducts($cursor: String) {
 
                   price: price || 0,
 
-                  stock:
-                    stock,
-
                   collections:
                     (collections || []).map(
                       c => String(c.id)
                     ),
 
                   status:
-                    (p.status || "active").toLowerCase(),
+                    p.publishedAt
+                      ? (p.status || "ACTIVE").toUpperCase()
+                      : "UNPUBLISHED",
 
                   shopifyCreatedAt:
                     p.createdAt
@@ -368,11 +361,12 @@ query getProducts($cursor: String) {
                   publishedAt:
                     p.publishedAt
                       ? new Date(p.publishedAt)
-                      : (
-                        p.createdAt
-                          ? new Date(p.createdAt)
-                          : null
-                      ),
+                      : null,
+
+                  shopifyPublishedAt:
+                    p.publishedAt
+                      ? new Date(p.publishedAt)
+                      : null,
 
                   shopifyUpdatedAt:
                     p.updatedAt
@@ -399,6 +393,10 @@ query getProducts($cursor: String) {
 
         totalSynced +=
           operations.length;
+
+        console.log(
+          `PRODUCTS SYNCED: ${totalSynced}`
+        );
       }
 
       // =========================
@@ -409,6 +407,10 @@ query getProducts($cursor: String) {
           data?.data?.products
             ?.pageInfo?.hasNextPage
         );
+
+      if (!hasNextPage) {
+        syncCompleted = true;
+      }
 
       const nextCursor =
         data?.data?.products
@@ -436,9 +438,8 @@ query getProducts($cursor: String) {
     // =========================
 
     if (
-      !hasNextPage &&
-      allProductIds.size > 5000 &&
-      totalSynced > 5000
+      syncCompleted &&
+      totalSynced === allProductIds.size
     ) {
 
       await Product.deleteMany({
@@ -482,8 +483,10 @@ router.post("/sync-collections", async (req, res) => {
     }
     const normalizedShop =
       shop
-        ?.trim()
-        ?.toLowerCase();
+        .replace(/^https?:\/\//, "")
+        .replace(/\/$/, "")
+        .trim()
+        .toLowerCase();
 
     // ======================================
     // 🔥 SHOPIFY SESSION
@@ -505,13 +508,23 @@ router.post("/sync-collections", async (req, res) => {
     let collectionIds =
       new Set();
 
+    const collectionSyncCounts = {
+      custom_collections: 0,
+      smart_collections: 0
+    };
+
     const rawCollections =
       await Product.distinct(
         "collections",
         {
           store:
             normalizedShop,
-          status: "active",
+          status: {
+            $in: [
+              "ACTIVE",
+              "active"
+            ]
+          },
           publishedAt: {
             $ne: null
           }
@@ -540,7 +553,7 @@ router.post("/sync-collections", async (req, res) => {
         let hasMore = true;
 
         let nextPageUrl =
-          `https://${normalizedShop}/admin/api/2025-01/${type}.json?limit=250`;
+          `https://${normalizedShop}/admin/api/2026-04/${type}.json?limit=250`;
 
         while (hasMore) {
 
@@ -690,6 +703,24 @@ router.post("/sync-collections", async (req, res) => {
                 collectionIds.add(
                   String(c.id)
                 );
+
+                const description =
+                  String(
+                    c.body_html || ""
+                  )
+                    .replace(/<[^>]*>/g, "")
+                    .slice(0, 2000);
+
+                const searchableText = [
+                  c.title || "",
+                  c.handle || "",
+                  description
+                ]
+                  .join(" ")
+                  .toLowerCase()
+                  .replace(/\s+/g, " ")
+                  .trim();
+
                 return {
                   updateOne: {
                     filter: {
@@ -716,26 +747,37 @@ router.post("/sync-collections", async (req, res) => {
                           c.handle || "",
 
                         description:
-                          String(
-                            c.body_html || ""
-                          )
-                            .replace(/<[^>]*>/g, "")
-                            .slice(0, 2000),
+                          description,
 
                         image:
                           c.image?.src || "",
 
+                        productsCount:
+                          Number(
+                            c.products_count || 0
+                          ),
+
                         rules:
                           c.rules || [],
 
-                        type,
+                        collectionType:
+                          type,
 
-                        publishedAt:
+                        shopifyCreatedAt:
+                          c.created_at
+                            ? new Date(
+                              c.created_at
+                            )
+                            : null,
+
+                        shopifyPublishedAt:
                           c.published_at
                             ? new Date(
                               c.published_at
                             )
-                            : null
+                            : null,
+
+                        searchableText
 
                       }
 
@@ -760,6 +802,13 @@ router.post("/sync-collections", async (req, res) => {
               {
                 ordered: false
               }
+            );
+
+            collectionSyncCounts[type] +=
+              bulkOps.length;
+
+            console.log(
+              `${type.toUpperCase()} SYNCED: ${collectionSyncCounts[type]}`
             );
 
           }
@@ -794,7 +843,7 @@ router.post("/sync-collections", async (req, res) => {
     const totalCollections =
       collectionIds.size;
     if (
-      totalCollections > 200
+      totalCollections > 0
     ) {
       await Collection.deleteMany({
         store:
