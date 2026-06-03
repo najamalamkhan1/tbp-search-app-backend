@@ -26,6 +26,9 @@ router.post(
   async (req, res) => {
 
     try {
+      if (!res.headersSent) {
+        res.status(200).send("OK");
+      }
 
       const product =
         JSON.parse(
@@ -35,7 +38,9 @@ router.post(
       const shop =
         req.headers[
         "x-shopify-shop-domain"
-        ];
+        ]
+          ?.trim()
+          ?.toLowerCase();
 
       const store =
         await Store.findOne({
@@ -49,9 +54,7 @@ router.post(
           shop
         );
 
-        return res
-          .status(404)
-          .send("Store not found");
+        return;
       }
 
       const searchableText = `
@@ -87,6 +90,13 @@ ${product.tags || ""}
           handle:
             product.handle || "",
 
+          description:
+            String(
+              product.body_html || ""
+            )
+              .replace(/<[^>]*>/g, "")
+              .slice(0, 2000),
+
           vendor:
             product.vendor || "",
 
@@ -104,14 +114,38 @@ ${product.tags || ""}
             product.image?.src || "",
 
           price:
-            product.variants?.[0]
-              ?.price || "0",
+            Number(
+              product.variants?.[0]
+                ?.price || 0
+            ),
 
           status:
-            (
-              product.status ||
-              "active"
-            ).toUpperCase(),
+            product.published_at
+              ? (
+                product.status ||
+                "active"
+              ).toUpperCase()
+              : "UNPUBLISHED",
+
+          publishedAt:
+            product.published_at
+              ? new Date(product.published_at)
+              : null,
+
+          shopifyPublishedAt:
+            product.published_at
+              ? new Date(product.published_at)
+              : null,
+
+          shopifyCreatedAt:
+            product.created_at
+              ? new Date(product.created_at)
+              : null,
+
+          shopifyUpdatedAt:
+            product.updated_at
+              ? new Date(product.updated_at)
+              : null,
 
           searchableText,
 
@@ -130,7 +164,9 @@ ${product.tags || ""}
         product.title
       );
 
-      res.status(200).send("OK");
+      if (!res.headersSent) {
+        res.status(200).send("OK");
+      }
 
     } catch (err) {
 
@@ -139,7 +175,9 @@ ${product.tags || ""}
         err
       );
 
-      res.status(500).send("Error");
+      if (!res.headersSent) {
+        res.status(500).send("Error");
+      }
     }
   }
 );
@@ -155,6 +193,9 @@ router.post(
   async (req, res) => {
 
     try {
+      if (!res.headersSent) {
+        res.status(200).send("OK");
+      }
 
       const product =
         JSON.parse(
@@ -164,7 +205,9 @@ router.post(
       const shop =
         req.headers[
         "x-shopify-shop-domain"
-        ];
+        ]
+          ?.trim()
+          ?.toLowerCase();
 
       const store =
         await Store.findOne({
@@ -178,9 +221,7 @@ router.post(
           shop
         );
 
-        return res
-          .status(404)
-          .send("Store not found");
+        return;
       }
 
       const searchableText = `
@@ -216,6 +257,13 @@ ${product.tags || ""}
           handle:
             product.handle || "",
 
+          description:
+            String(
+              product.body_html || ""
+            )
+              .replace(/<[^>]*>/g, "")
+              .slice(0, 2000),
+
           vendor:
             product.vendor || "",
 
@@ -233,14 +281,38 @@ ${product.tags || ""}
             product.image?.src || "",
 
           price:
-            product.variants?.[0]
-              ?.price || "0",
+            Number(
+              product.variants?.[0]
+                ?.price || 0
+            ),
 
           status:
-            (
-              product.status ||
-              "active"
-            ).toUpperCase(),
+            product.published_at
+              ? (
+                product.status ||
+                "active"
+              ).toUpperCase()
+              : "UNPUBLISHED",
+
+          publishedAt:
+            product.published_at
+              ? new Date(product.published_at)
+              : null,
+
+          shopifyPublishedAt:
+            product.published_at
+              ? new Date(product.published_at)
+              : null,
+
+          shopifyCreatedAt:
+            product.created_at
+              ? new Date(product.created_at)
+              : null,
+
+          shopifyUpdatedAt:
+            product.updated_at
+              ? new Date(product.updated_at)
+              : null,
 
           searchableText,
 
@@ -259,7 +331,9 @@ ${product.tags || ""}
         product.title
       );
 
-      res.status(200).send("OK");
+      if (!res.headersSent) {
+        res.status(200).send("OK");
+      }
 
     } catch (err) {
 
@@ -268,7 +342,9 @@ ${product.tags || ""}
         err
       );
 
-      res.status(500).send("Error");
+      if (!res.headersSent) {
+        res.status(500).send("Error");
+      }
     }
   }
 );
@@ -284,6 +360,9 @@ router.post(
   async (req, res) => {
 
     try {
+      if (!res.headersSent) {
+        res.status(200).send("OK");
+      }
 
       const product =
         JSON.parse(
@@ -293,7 +372,9 @@ router.post(
       const shop =
         req.headers[
         "x-shopify-shop-domain"
-        ];
+        ]
+          ?.trim()
+          ?.toLowerCase();
 
       await Product.findOneAndDelete({
 
@@ -308,7 +389,9 @@ router.post(
         product.id
       );
 
-      res.status(200).send("OK");
+      if (!res.headersSent) {
+        res.status(200).send("OK");
+      }
 
     } catch (err) {
 
@@ -317,7 +400,9 @@ router.post(
         err
       );
 
-      res.status(500).send("Error");
+      if (!res.headersSent) {
+        res.status(500).send("Error");
+      }
     }
   }
 );

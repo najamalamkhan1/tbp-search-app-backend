@@ -16,11 +16,14 @@ router.post(
   async (req, res) => {
 
     try {
+      res.status(200).send("OK");
 
       const shop =
         req.headers[
           "x-shopify-shop-domain"
-        ];
+        ]
+          ?.trim()
+          ?.toLowerCase();
 
       const data =
         JSON.parse(req.body.toString());
@@ -47,9 +50,32 @@ router.post(
           image:
             data.image?.src || "",
 
+          description:
+            String(
+              data.body_html || ""
+            )
+              .replace(/<[^>]*>/g, "")
+              .slice(0, 2000),
+
+          productsCount:
+            Number(
+              data.products_count || 0
+            ),
+
+          shopifyCreatedAt:
+            data.created_at
+              ? new Date(data.created_at)
+              : null,
+
+          shopifyPublishedAt:
+            data.published_at
+              ? new Date(data.published_at)
+              : null,
+
           searchableText: `
             ${data.title || ""}
             ${data.handle || ""}
+            ${data.body_html || ""}
           `.toLowerCase()
 
         },
@@ -65,7 +91,9 @@ router.post(
         data.title
       );
 
-      res.status(200).send("OK");
+      if (!res.headersSent) {
+        res.status(200).send("OK");
+      }
 
     } catch (err) {
 
@@ -74,7 +102,9 @@ router.post(
         err
       );
 
-      res.status(500).send("ERROR");
+      if (!res.headersSent) {
+        res.status(500).send("ERROR");
+      }
     }
   }
 );
@@ -88,11 +118,14 @@ router.post(
   async (req, res) => {
 
     try {
+      res.status(200).send("OK");
 
       const shop =
         req.headers[
           "x-shopify-shop-domain"
-        ];
+        ]
+          ?.trim()
+          ?.toLowerCase();
 
       const data =
         JSON.parse(req.body.toString());
@@ -119,9 +152,32 @@ router.post(
           image:
             data.image?.src || "",
 
+          description:
+            String(
+              data.body_html || ""
+            )
+              .replace(/<[^>]*>/g, "")
+              .slice(0, 2000),
+
+          productsCount:
+            Number(
+              data.products_count || 0
+            ),
+
+          shopifyCreatedAt:
+            data.created_at
+              ? new Date(data.created_at)
+              : null,
+
+          shopifyPublishedAt:
+            data.published_at
+              ? new Date(data.published_at)
+              : null,
+
           searchableText: `
             ${data.title || ""}
             ${data.handle || ""}
+            ${data.body_html || ""}
           `.toLowerCase()
 
         },
@@ -137,7 +193,9 @@ router.post(
         data.title
       );
 
-      res.status(200).send("OK");
+      if (!res.headersSent) {
+        res.status(200).send("OK");
+      }
 
     } catch (err) {
 
@@ -146,7 +204,9 @@ router.post(
         err
       );
 
-      res.status(500).send("ERROR");
+      if (!res.headersSent) {
+        res.status(500).send("ERROR");
+      }
     }
   }
 );
@@ -160,11 +220,14 @@ router.post(
   async (req, res) => {
 
     try {
+      res.status(200).send("OK");
 
       const shop =
         req.headers[
           "x-shopify-shop-domain"
-        ];
+        ]
+          ?.trim()
+          ?.toLowerCase();
 
       const data =
         JSON.parse(req.body.toString());
@@ -182,7 +245,9 @@ router.post(
         data.id
       );
 
-      res.status(200).send("OK");
+      if (!res.headersSent) {
+        res.status(200).send("OK");
+      }
 
     } catch (err) {
 
@@ -191,7 +256,9 @@ router.post(
         err
       );
 
-      res.status(500).send("ERROR");
+      if (!res.headersSent) {
+        res.status(500).send("ERROR");
+      }
     }
   }
 );

@@ -42,6 +42,12 @@ router.post("/sync-products", async (req, res) => {
       });
     }
 
+    res.status(202).json({
+      success: true,
+      message: "Product sync started. Check server logs for progress.",
+      shop
+    });
+
     let hasNextPage = true;
 
     let cursor = null;
@@ -456,15 +462,28 @@ query getProducts($cursor: String) {
     // =========================
     // ✅ DONE
     // =========================
-    res.json({
-      success: true,
-      totalSynced
-    });
+    if (!res.headersSent) {
+      res.json({
+        success: true,
+        totalSynced
+      });
+    } else {
+      console.log(
+        `PRODUCT SYNC COMPLETED: ${totalSynced}`
+      );
+    }
   } catch (err) {
     console.error(err);
-    res.status(500).json({
-      error: err.message
-    });
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: err.message
+      });
+    } else {
+      console.log(
+        "BACKGROUND PRODUCT SYNC FAILED:",
+        err.message
+      );
+    }
   }
 });
 
