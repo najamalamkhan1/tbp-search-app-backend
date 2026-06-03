@@ -9,6 +9,16 @@ const Product = require("../Models/productModel")
 const Collection = require("../Models/collectionModel");
 const FeaturedBrand = require("../Models/featuredBrandsModel");
 
+const normalizeDomain = (domain) =>
+  (domain || "")
+    .replace(/^https?:\/\//, "")
+    .replace(/\/$/, "")
+    .trim()
+    .toLowerCase();
+
+const escapeRegex = (value) =>
+  String(value).replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&");
+
 // POST /api/stores/add
 
 router.post("/stores/add", async (req, res) => {
@@ -1135,10 +1145,10 @@ router.get("/trending-brands", async (req, res) => {
     // STORE
     // =========================
 
-    const { store } =
-      req.query;
+    const { store, shop } = req.query;
+    const rawStore = store || shop;
 
-    if (!store) {
+    if (!rawStore) {
 
       return res.status(400)
         .json({
@@ -1147,12 +1157,7 @@ router.get("/trending-brands", async (req, res) => {
 
     }
 
-    const cleanStore =
-      store
-        .replace(/^https?:\/\//, "")
-        .replace(/\/$/, "")
-        .trim()
-        .toLowerCase();
+    const cleanStore = normalizeDomain(rawStore);
 
     // =========================
     // STORES
@@ -1294,7 +1299,7 @@ router.get("/trending-brands", async (req, res) => {
             const response =
               await fetch(
 
-                `https://${cleanDomain}/admin/api/2024-01/graphql.json`,
+                `https://${cleanDomain}/admin/api/2026-04/graphql.json`,
 
                 {
                   method: "POST",
@@ -1677,9 +1682,10 @@ router.get("/trending", async (req, res) => {
     // STORE
     // =========================
 
-    const { store } = req.query;
+    const { store, shop } = req.query;
+    const rawStore = store || shop;
 
-    if (!store) {
+    if (!rawStore) {
 
       return res.status(400).json({
         error: "Store is required"
@@ -1691,11 +1697,7 @@ router.get("/trending", async (req, res) => {
     // CLEAN STORE
     // =========================
 
-    const cleanStore = store
-      .replace(/^https?:\/\//, "")
-      .replace(/\/$/, "")
-      .trim()
-      .toLowerCase();
+    const cleanStore = normalizeDomain(rawStore);
 
     // =========================
     // MATCH STORE
@@ -1705,7 +1707,7 @@ router.get("/trending", async (req, res) => {
       await Store.find({
         domain: {
           $regex: new RegExp(
-            `^${cleanStore}$`,
+            `^${escapeRegex(cleanStore)}$`,
             "i"
           )
         }
@@ -1736,7 +1738,7 @@ router.get("/trending", async (req, res) => {
             const response =
               await fetch(
 
-                `https://${cleanDomain}/admin/api/2024-01/graphql.json`,
+                `https://${cleanDomain}/admin/api/2026-04/graphql.json`,
 
                 {
                   method: "POST",

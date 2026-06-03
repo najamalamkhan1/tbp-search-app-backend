@@ -188,7 +188,7 @@ router.post("/store/save", async (req, res) => {
 
     const verifyResponse = await fetch(
 
-      `https://${domain}/admin/api/2024-01/shop.json`,
+      `https://${domain}/admin/api/2026-04/shop.json`,
 
       {
         headers: {
