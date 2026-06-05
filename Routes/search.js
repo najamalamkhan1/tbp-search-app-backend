@@ -19,6 +19,8 @@ const normalizeDomain = (domain) =>
 
 const escapeRegex = (value) =>
   String(value).replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&");
+const normalizeId = (id) =>
+  String(id || "").replace("gid://shopify/Collection/", "").trim();
 
 // POST /api/stores/add
 
@@ -352,129 +354,41 @@ router.get("/search", async (req, res) => {
     // =========================
     let searchConditions = [];
 
-    if (detectedVendor) {
+if (detectedVendor) {
 
-      // ✅ VENDOR MATCH
-      searchConditions.push({
+  // ✅ VENDOR MATCH
+  searchConditions.push({
+    vendor: { $regex: escapeRegex(detectedVendor), $options: "i" }
+  });
 
-        vendor: {
-          $regex:
-            detectedVendor,
-          $options: "i"
-        }
+  // ✅ REMAINING QUERY
+  if (remainingQuery) {
+    searchConditions.push({
+      $or: [
+        ...remainingTokens.map(t => ({
+          title: { $regex: escapeRegex(t), $options: "i" }
+        })),
+        { searchableText: { $regex: escapeRegex(remainingQuery), $options: "i" } },
+        { tags:           { $regex: escapeRegex(remainingQuery), $options: "i" } },
+        { collections:    { $regex: escapeRegex(remainingQuery), $options: "i" } }
+      ]
+    });
+  }
 
-      });
+} else {
 
-      // ✅ REMAINING QUERY
-      if (remainingQuery) {
-
-        searchConditions.push({
-
-          $or: [
-
-            // TOKEN TITLE MATCHES
-            ...remainingTokens.map(t => ({
-
-              title: {
-                $regex: t,
-                $options: "i"
-              }
-
-            })),
-
-            // SEARCHABLE TEXT
-            {
-              searchableText:
-                new RegExp(
-                  remainingQuery,
-                  "i"
-                )
-            },
-
-            // TAGS
-            {
-              tags: {
-                $regex:
-                  remainingQuery,
-                $options: "i"
-              }
-            },
-
-            // COLLECTIONS
-            {
-              collections: {
-                $regex:
-                  remainingQuery,
-                $options: "i"
-              }
-            }
-
-          ]
-
-        });
-      }
-
-    } else {
-
-      // =========================
-      // 🔥 NORMAL SEARCH
-      // =========================
-      searchConditions.push({
-
-        $or: [
-
-          {
-            title:
-              new RegExp(
-                normalizedQuery,
-                "i"
-              )
-          },
-
-          {
-            vendor:
-              new RegExp(
-                normalizedQuery,
-                "i"
-              )
-          },
-
-          {
-            productType:
-              new RegExp(
-                normalizedQuery,
-                "i"
-              )
-          },
-
-          {
-            searchableText:
-              new RegExp(
-                normalizedQuery,
-                "i"
-              )
-          },
-
-          {
-            tags: {
-              $regex:
-                normalizedQuery,
-              $options: "i"
-            }
-          },
-
-          {
-            collections: {
-              $regex:
-                normalizedQuery,
-              $options: "i"
-            }
-          }
-
-        ]
-
-      });
-    }
+  // 🔥 NORMAL SEARCH
+  searchConditions.push({
+    $or: [
+      { title:          { $regex: escapeRegex(normalizedQuery), $options: "i" } },
+      { vendor:         { $regex: escapeRegex(normalizedQuery), $options: "i" } },
+      { productType:    { $regex: escapeRegex(normalizedQuery), $options: "i" } },
+      { searchableText: { $regex: escapeRegex(normalizedQuery), $options: "i" } },
+      { tags:           { $regex: escapeRegex(normalizedQuery), $options: "i" } },
+      { collections:    { $regex: escapeRegex(normalizedQuery), $options: "i" } }
+    ]
+  });
+}
 
     // =========================
     // 🔥 SEARCH PRODUCTS
@@ -516,12 +430,12 @@ router.get("/search", async (req, res) => {
       products.length < 50 &&
       detectedVendor
     ) {
-      const fallbackProducts =
+       const fallbackProducts =
         await Product.find({
           store: cleanStore,
           status: "ACTIVE",
           vendor: {
-            $regex: detectedVendor,
+            $regex: escapeRegex(detectedVendor),
             $options: "i"
           }
         })
@@ -816,29 +730,18 @@ router.get("/search", async (req, res) => {
     // =========================
 
     const collectionIds = [
-
       ...new Set(
-
-        products.flatMap(p => {
-
-          if (!Array.isArray(p.collections)) {
-            return [];
-          }
-
-          return p.collections.map(id =>
-
-            String(id)
-              .replace(
-                "gid://shopify/Collection/",
-                ""
-              )
-
-          );
-
-        })
-
+        products
+          .flatMap(p =>
+            Array.isArray(p.collections)
+              ? p.collections.map(id => String(id))
+              : []
+          )
+          .flatMap(id => {
+            const plain = normalizeId(id);
+            return [plain, `gid://shopify/Collection/${plain}`];   // dono format
+          })
       )
-
     ];
 
     // =========================
@@ -1047,33 +950,16 @@ router.get("/search", async (req, res) => {
 
     if (collections.length === 0 && detectedVendor) {
 
+      const safeVendor = escapeRegex(detectedVendor);
+
       collections = await Collection.find({
 
         store: cleanStore,
 
         $or: [
-
-          {
-            vendor: {
-              $regex: detectedVendor,
-              $options: "i"
-            }
-          },
-
-          {
-            searchableText: {
-              $regex: detectedVendor,
-              $options: "i"
-            }
-          },
-
-          {
-            title: {
-              $regex: detectedVendor,
-              $options: "i"
-            }
-          }
-
+          { vendor: { $regex: safeVendor, $options: "i" } },
+          { searchableText: { $regex: safeVendor, $options: "i" } },
+          { title: { $regex: safeVendor, $options: "i" } }
         ]
 
       })
@@ -1097,21 +983,10 @@ router.get("/search", async (req, res) => {
         // RELATED PRODUCTS
         const relatedProducts =
           products.filter(p =>
-
             Array.isArray(p.collections) &&
-
             p.collections.some(id =>
-
-              String(id)
-                .replace(
-                  "gid://shopify/Collection/",
-                  ""
-                ) ===
-
-              String(c.collectionId)
-
+              normalizeId(id) === normalizeId(c.collectionId)   // dono side normalize
             )
-
           );
         // LATEST PRODUCT
         const latestProduct =
@@ -1145,16 +1020,13 @@ router.get("/search", async (req, res) => {
             0
           );
 
-        const title =
-          (c.title || "").toLowerCase();
+        const title = (c.title || "").toLowerCase();
 
-        if (
-          detectedVendor &&
-          title.includes(
-            detectedVendor.toLowerCase()
-          )
-        ) {
-          collectionScore += 50000;
+        const titleVendorMatch =
+          detectedVendor ? title.includes(detectedVendor.toLowerCase()) : false;
+
+        if (titleVendorMatch) {
+          collectionScore += 200000;
         }
 
         if (detectedVendor) {
@@ -1215,6 +1087,8 @@ router.get("/search", async (req, res) => {
 
           ...c,
 
+          titleVendorMatch,
+
           latestDate:
             latestProduct?.shopifyPublishedAt ||
             latestProduct?.shopifyCreatedAt ||
@@ -1232,31 +1106,23 @@ router.get("/search", async (req, res) => {
     // 🔥 SORT COLLECTIONS
     // =========================
 
-    collections.sort((a, b) => {
-
-      // SCORE FIRST
-      if (
-        b.score !== a.score
-      ) {
-
-        return (
-          b.score - a.score
-        );
+    // brand detect hua to sirf brand-named collections rakho
+    if (detectedVendor) {
+      const brandCollections = collections.filter(c => c.titleVendorMatch);
+      if (brandCollections.length) {
+        collections = brandCollections;
       }
+    }
 
-      // THEN LATEST
-      return (
-
-        new Date(
-          b.latestDate
-        ) -
-
-        new Date(
-          a.latestDate
-        )
-
-      );
-
+    collections.sort((a, b) => {
+      // brand-named collections sabse pehle
+      if (a.titleVendorMatch !== b.titleVendorMatch) {
+        return a.titleVendorMatch ? -1 : 1;
+      }
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+      return new Date(b.latestDate) - new Date(a.latestDate);
     });
 
     // =========================
