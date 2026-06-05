@@ -458,6 +458,15 @@ if (detectedVendor) {
       });
     }
 
+     // Debugging: Check product dates
+    console.log("DATE CHECK:", products.slice(0, 5).map(p => ({
+      title: p.title,
+      publishedAt: p.shopifyPublishedAt,
+      shopifyCreatedAt: p.shopifyCreatedAt,
+      shopifyUpdatedAt: p.shopifyUpdatedAt,
+      createdAt: p.createdAt
+    })));
+
     // =========================
     // 🔥 FORMAT + SCORE PRODUCTS
     // =========================
@@ -657,9 +666,7 @@ if (detectedVendor) {
       const productDate =
 
         p.shopifyPublishedAt ||
-        p.shopifyCreatedAt ||
-
-        p.createdAt;
+        p.shopifyCreatedAt
 
       const created =
         productDate
@@ -708,19 +715,8 @@ if (detectedVendor) {
 
       // THEN PUBLISHED DATE
       return (
-        new Date(
-          b.shopifyPublishedAt ||
-          b.shopifyCreatedAt ||
-          b.createdAt ||
-          0
-        ) -
-
-        new Date(
-          a.shopifyPublishedAt ||
-          a.shopifyCreatedAt ||
-          a.createdAt ||
-          0
-        )
+        new Date(b.shopifyPublishedAt || b.shopifyCreatedAt || 0) -
+        new Date(a.shopifyPublishedAt || a.shopifyCreatedAt || 0)
       );
 
     });
