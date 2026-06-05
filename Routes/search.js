@@ -1034,25 +1034,8 @@ router.get("/search", async (req, res) => {
             shopifyPublishedAt: -1,
             shopifyCreatedAt: -1
           })
-          .limit(20)
+          .limit(50)
           .lean();
-          console.log(
-  "FOUND COLLECTIONS:",
-  collections.length
-);
-
-console.log(
-  "FIRST FOUND COLLECTION:",
-  collections[0]?.title
-);
-
-console.log(
-  "FOUND COLLECTION IDS:",
-  collections
-    .slice(0, 10)
-    .map(c => c.collectionId)
-);
-
     }
 
     // =========================
@@ -1111,12 +1094,6 @@ console.log(
 
       collections.map(c => {
 
-        console.log(
-  "COLLECTION:",
-  c.collectionId,
-  c.title
-);
-
         // RELATED PRODUCTS
         const relatedProducts =
           products.filter(p =>
@@ -1168,11 +1145,17 @@ console.log(
             0
           );
 
-          console.log(
-  "RELATED PRODUCTS:",
-  c.collectionId,
-  relatedProducts.length
-);
+        const title =
+          (c.title || "").toLowerCase();
+
+        if (
+          detectedVendor &&
+          title.includes(
+            detectedVendor.toLowerCase()
+          )
+        ) {
+          collectionScore += 50000;
+        }
 
         if (detectedVendor) {
 
