@@ -90,7 +90,7 @@ router.get("/search", async (req, res) => {
           status: "ACTIVE"
         })
           .sort({
-            shopifyPublishedAt: -1,
+            firstPublishedAt: -1,
             shopifyCreatedAt: -1
           })
           .limit(20)
@@ -406,7 +406,7 @@ router.get("/search", async (req, res) => {
         })
         .limit(300)
         .lean()
-        
+
         .select(`
       title
       handle
@@ -440,7 +440,7 @@ router.get("/search", async (req, res) => {
             $regex: escapeRegex(detectedVendor),
             $options: "i"
           }
-        })
+        }).sort({ firstPublishedAt: -1, shopifyCreatedAt: -1 })
           .limit(300)
           .lean();
       const existingIds =
@@ -458,6 +458,67 @@ router.get("/search", async (req, res) => {
           products.push(p);
         }
       });
+    }
+
+    // =========================
+    // 🔥 FUZZY KEYWORD FALLBACK
+    // typo tolerance for keywords (e.g. "emrodry" → embroidery)
+    // sirf keyword search pe (jab koi brand detect na hua ho)
+    // =========================
+    const FUZZY_THRESHOLD = 0.5; // kam karo (e.g. 0.42) to zyada tolerant — par false matches barhenge
+
+    if (
+      !detectedVendor &&
+      products.length < 20 &&
+      normalizedQuery.length >= 3
+    ) {
+
+      const qTokens =
+        normalizedQuery.split(" ").filter(t => t.length >= 3);
+
+      if (qTokens.length) {
+
+        const pool = await Product.find({
+          store: cleanStore,
+          status: "ACTIVE"
+        })
+          .sort({ firstPublishedAt: -1, shopifyCreatedAt: -1 })
+          .limit(5000)
+          .lean()
+          .select(`
+            title vendor handle image price
+            searchableText tags collections
+            createdAt shopifyCreatedAt shopifyPublishedAt firstPublishedAt status
+          `);
+
+        const existingIds = new Set(products.map(p => String(p._id)));
+
+        pool.forEach(p => {
+          if (existingIds.has(String(p._id))) return;
+
+          const haystack = (p.searchableText || p.title || "").toLowerCase();
+          const hTokens = haystack.split(/[\s\-|_/,.]+/).filter(Boolean);
+
+          let isMatch = false;
+          for (const qt of qTokens) {
+            for (const ht of hTokens) {
+              if (
+                ht.includes(qt) ||
+                (
+                  Math.abs(qt.length - ht.length) <= 3 &&
+                  stringSimilarity.compareTwoStrings(qt, ht) >= FUZZY_THRESHOLD
+                )
+              ) {
+                isMatch = true;
+                break;
+              }
+            }
+            if (isMatch) break;
+          }
+
+          if (isMatch) products.push(p);
+        });
+      }
     }
 
     // =========================
@@ -686,25 +747,61 @@ router.get("/search", async (req, res) => {
         score += 5000;
       }
 
+      // ======================
+      // KEYWORD MATCH (typo tolerant) — prioritize ke liye
+      // ======================
+      let keywordHits = 0;
+      if (remainingTokens.length) {
+        const hayTokens =
+          (title + " " + searchable)
+            .split(/[\s\-|_/,.]+/)
+            .filter(Boolean);
+
+        remainingTokens.forEach(qt => {
+          if (qt.length < 3) return;
+          const hit = hayTokens.some(ht =>
+            ht.includes(qt) ||
+            (
+              Math.abs(qt.length - ht.length) <= 3 &&
+              stringSimilarity.compareTwoStrings(qt, ht) >= FUZZY_THRESHOLD
+            )
+          );
+          if (hit) keywordHits++;
+        });
+      }
+
       return {
         ...p,
+        keywordHits,
         score
       };
-
     });
+
+    // brand + keyword: agar keyword-matched products mojood hain to sirf wahi
+    // (warna saare brand products — taake empty na rahe)
+    if (detectedVendor && remainingTokens.length) {
+      const matched = products.filter(p => p.keywordHits > 0);
+      if (matched.length) products = matched;
+    }
+
     // =========================
     // 🔥 FINAL PRODUCT SORT
     // =========================
 
     products.sort((a, b) => {
+      // 1. zyada keyword match karne wale pehle (jab keyword/typo ho)
+      if (remainingTokens.length && b.keywordHits !== a.keywordHits) {
+        return b.keywordHits - a.keywordHits;
+      }
+
+      // 2. phir newest first (first-publish)
       const da = new Date(a.firstPublishedAt || a.shopifyCreatedAt || 0).getTime();
       const db = new Date(b.firstPublishedAt || b.shopifyCreatedAt || 0).getTime();
-
-      // first-publish ke hisaab se newest upar
       if (db !== da) return db - da;
+
+      // 3. tie pe relevance score
       return b.score - a.score;
     });
-
     // =========================
     // 🔥 COLLECTION IDS
     // =========================
@@ -914,7 +1011,6 @@ router.get("/search", async (req, res) => {
 
         })
           .sort({
-            firstPublishedAt: -1,
             shopifyCreatedAt: -1
           })
           .limit(50)
@@ -944,7 +1040,7 @@ router.get("/search", async (req, res) => {
 
       })
         .sort({
-          shopifyPublishedAt: -1,
+          firstPublishedAt: -1,
           shopifyCreatedAt: -1
         })
         .limit(20)
