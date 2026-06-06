@@ -1215,15 +1215,34 @@ router.get("/search", async (req, res) => {
       }
     }
 
+    // Debugging: collection dates check karo
+    console.log("COLL DATES:", collections.map(c => ({
+      title: c.title,
+      created: c.shopifyCreatedAt,
+      published: c.shopifyPublishedAt
+    })));
+
     collections.sort((a, b) => {
       // brand-named collections sabse pehle
       if (a.titleVendorMatch !== b.titleVendorMatch) {
         return a.titleVendorMatch ? -1 : 1;
       }
-      if (b.score !== a.score) {
-        return b.score - a.score;
+
+      // phir NEWEST collection pehle (collection ki apni creation date)
+      const da = new Date(
+        a.shopifyCreatedAt || a.shopifyPublishedAt || 0
+      ).getTime();
+
+      const db = new Date(
+        b.shopifyCreatedAt || b.shopifyPublishedAt || 0
+      ).getTime();
+
+      if (db !== da) {
+        return db - da;
       }
-      return new Date(b.latestDate) - new Date(a.latestDate);
+
+      // sirf tiebreak ke liye relevance score
+      return (b.score || 0) - (a.score || 0);
     });
 
     // =========================
