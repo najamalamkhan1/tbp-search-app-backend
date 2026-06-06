@@ -2308,7 +2308,17 @@ router.get("/trending-collections", async (req, res) => {
               }
             );
 
-            if (!response.ok) continue;
+            if (!response.ok) {
+
+              console.log(
+                "SHOPIFY COLLECTION API ERROR:",
+                response.status,
+                type,
+                cleanDomain
+              );
+
+              continue;
+            }
 
             const data = await response.json();
             const list = Array.isArray(data[type]) ? data[type] : [];
@@ -2340,14 +2350,38 @@ router.get("/trending-collections", async (req, res) => {
     // published + non-empty filter, phir latest (created) first
     const collections = results
       .flat()
-      .filter(c => c.publishedAt && c.handle && c.productsCount > 0)
-      .sort((a, b) => b.timestamp - a.timestamp)
+      .filter(c => c.handle)
+      .sort((a, b) => {
+        const scoreA =
+          a.productsCount * 100;
+        const scoreB =
+          b.productsCount * 100;
+        return scoreB - scoreA;
+      })
       .slice(0, 10)
       .map(c => ({
         title: c.title,
         handle: c.handle,
         image: c.image
       }));
+
+    // Debug log to verify collection data
+    console.log(
+      "RAW COLLECTIONS:",
+      results.flat().length
+    );
+
+    console.log(
+      "FINAL COLLECTIONS:",
+      collections.length
+    );
+
+    console.log(
+      "COLLECTION TITLES:",
+      collections.map(
+        c => c.title
+      )
+    );
 
     res.json({ collections });
   } catch (err) {
