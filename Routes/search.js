@@ -1243,7 +1243,7 @@ router.get("/search", async (req, res) => {
     const formattedCollections =
       collections
         .filter(c => c.title)
-        .slice(0, 5)
+        .slice(0, 10)
         .map(c => ({
 
           title:
