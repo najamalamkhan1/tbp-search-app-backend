@@ -138,6 +138,14 @@ const productSchema =
     },
 
     // =========================
+    // 🔥 VARIANT TITLES (for variant search — populate on product sync)
+    // =========================
+    variantTitles: {
+      type: [String],
+      default: []
+    },
+
+    // =========================
     // 🔥 SEARCHABLE TEXT
     // =========================
     searchableText: {
@@ -161,6 +169,7 @@ productSchema.pre("save", function (next) {
   ${this.productType}
   ${(this.tags || []).join(" ")}
   ${(this.collections || []).join(" ")}
+  ${(this.variantTitles || []).join(" ")}
 `.toLowerCase();
 
   next();

@@ -34,6 +34,15 @@ const SettingsSchema = new mongoose.Schema({
     stopWords: [{ type: String }]
   },
 
+  searchOptions: {
+    searchInTitle:       { type: Boolean, default: true  },
+    searchInDescription: { type: Boolean, default: false },
+    searchInTags:        { type: Boolean, default: true  },
+    searchInVendor:      { type: Boolean, default: true  },
+    searchInVariants:    { type: Boolean, default: false },
+    searchInCollections: { type: Boolean, default: true  }
+  },
+
   billing: {
     plan: { type: String, default: "free" },
     usage: { type: Number, default: 0 }

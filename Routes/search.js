@@ -8,6 +8,8 @@ const Boost = require("../Models/boostModel");
 const Product = require("../Models/productModel")
 const Collection = require("../Models/collectionModel");
 const FeaturedBrand = require("../Models/featuredBrandsModel");
+const TrendingSettings = require("../Models/trendingSettingsModel");
+const Settings = require("../Models/settingsModel");
 const stringSimilarity = require("string-similarity");
 
 const normalizeDomain = (domain) =>
@@ -33,7 +35,8 @@ const latestProductTime = (product = {}) =>
   toTime(product.shopifyCreatedAt);
 
 const latestCollectionTime = (collection = {}) =>
-  // Republish/update should not make an old collection fresh again.
+  // shopifyPublishedAt reflects most recent publish — recently published collections rank higher
+  toTime(collection.shopifyPublishedAt) ||
   toTime(collection.firstPublishedAt) ||
   toTime(collection.shopifyCreatedAt);
 
@@ -81,6 +84,20 @@ const vendorCache = {};
 
 const CACHE_TIME =
   1000 * 60 * 2 // 10 min
+
+const settingsCache = {};
+const SETTINGS_CACHE_TTL = 1000 * 60; // 1 min — fast refresh when admin updates options
+
+const getSearchSettings = async (shop) => {
+  const cached = settingsCache[shop];
+  if (cached && Date.now() - cached.timestamp < SETTINGS_CACHE_TTL) {
+    return cached.data;
+  }
+  const doc = await Settings.findOne({ shop }).lean();
+  const data = doc?.searchOptions || {};
+  settingsCache[shop] = { data, timestamp: Date.now() };
+  return data;
+};
 
 router.get("/search", async (req, res) => {
 
@@ -143,6 +160,11 @@ router.get("/search", async (req, res) => {
     }
 
     // =========================
+    // 🔥 LOAD SEARCH OPTIONS
+    // =========================
+    const searchOpts = await getSearchSettings(shop);
+
+    // =========================
     // 🔥 APPLY SYNONYM
     // =========================
     const synonymData =
@@ -151,18 +173,18 @@ router.get("/search", async (req, res) => {
         store: shop
       });
 
-    let finalQuery =
-      originalQuery;
+    // Extract all synonym words (schema: synonyms[].word)
+    const synonymWords = (synonymData?.synonyms || [])
+      .map(s => s.word?.toLowerCase().trim())
+      .filter(Boolean);
 
-    if (
-      synonymData &&
-      synonymData.synonyms?.length > 0
-    ) {
-      finalQuery =
-        synonymData.synonyms[0]
-          .toLowerCase()
-          .trim();
-    }
+    // finalQuery: first synonym (for display/meta) or original
+    const finalQuery = synonymWords.length > 0
+      ? synonymWords[0]
+      : originalQuery;
+
+    // allSearchTerms: original + every synonym — used for expanded DB search
+    const allSearchTerms = [...new Set([originalQuery, ...synonymWords])];
 
     // =========================
     // 🔥 GET BOOSTS
@@ -226,10 +248,9 @@ router.get("/search", async (req, res) => {
     // =========================
     // 🔥 NORMALIZE QUERY
     // =========================
-    const normalizedQuery =
-      finalQuery
-        .toLowerCase()
-        .trim();
+    // Always use original query for vendor detection + scoring.
+    // Synonyms expand search via allSearchTerms — they don't replace the query.
+    const normalizedQuery = originalQuery;
 
     // =========================
     // 🔥 DETECT BEST VENDOR
@@ -387,40 +408,68 @@ router.get("/search", async (req, res) => {
     // =========================
     let searchConditions = [];
 
+    // Build $or field conditions for a set of terms, respecting admin search options
+    const buildOrConds = (terms) => {
+      const conds = [];
+      for (const term of terms) {
+        if (!term) continue;
+        const esc = escapeRegex(term);
+        if (searchOpts.searchInTitle !== false)
+          conds.push({ title: { $regex: esc, $options: "i" } });
+        if (searchOpts.searchInVendor !== false)
+          conds.push({ vendor: { $regex: esc, $options: "i" } });
+        conds.push({ productType: { $regex: esc, $options: "i" } });
+        if (searchOpts.searchInTags !== false) {
+          conds.push({ tags: { $regex: esc, $options: "i" } });
+          conds.push({ searchableText: { $regex: esc, $options: "i" } });
+        }
+        if (searchOpts.searchInCollections !== false)
+          conds.push({ collections: { $regex: esc, $options: "i" } });
+        if (searchOpts.searchInDescription === true)
+          conds.push({ description: { $regex: esc, $options: "i" } });
+      }
+      return conds;
+    };
+
     if (detectedVendor) {
 
-      // ✅ VENDOR MATCH
+      // ✅ VENDOR MATCH (always — vendor detection is not affected by searchInVendor option)
       searchConditions.push({
         vendor: { $regex: escapeRegex(detectedVendor), $options: "i" }
       });
 
-      // ✅ REMAINING QUERY
+      // ✅ REMAINING QUERY (expanded with all synonyms)
       if (remainingQuery) {
-        searchConditions.push({
-          $or: [
-            ...remainingTokens.map(t => ({
-              title: { $regex: escapeRegex(t), $options: "i" }
-            })),
-            { searchableText: { $regex: escapeRegex(remainingQuery), $options: "i" } },
-            { tags: { $regex: escapeRegex(remainingQuery), $options: "i" } },
-            { collections: { $regex: escapeRegex(remainingQuery), $options: "i" } }
-          ]
+        const orConds = [];
+
+        if (searchOpts.searchInTitle !== false) {
+          remainingTokens.forEach(t => {
+            orConds.push({ title: { $regex: escapeRegex(t), $options: "i" } });
+          });
+        }
+
+        // Remaining query + synonym expansions
+        [remainingQuery, ...synonymWords].forEach(term => {
+          if (!term) return;
+          const esc = escapeRegex(term);
+          if (searchOpts.searchInTags !== false) {
+            orConds.push({ searchableText: { $regex: esc, $options: "i" } });
+            orConds.push({ tags: { $regex: esc, $options: "i" } });
+          }
+          if (searchOpts.searchInCollections !== false)
+            orConds.push({ collections: { $regex: esc, $options: "i" } });
+          if (searchOpts.searchInDescription === true)
+            orConds.push({ description: { $regex: esc, $options: "i" } });
         });
+
+        if (orConds.length) searchConditions.push({ $or: orConds });
       }
 
     } else {
 
-      // 🔥 NORMAL SEARCH
-      searchConditions.push({
-        $or: [
-          { title: { $regex: escapeRegex(normalizedQuery), $options: "i" } },
-          { vendor: { $regex: escapeRegex(normalizedQuery), $options: "i" } },
-          { productType: { $regex: escapeRegex(normalizedQuery), $options: "i" } },
-          { searchableText: { $regex: escapeRegex(normalizedQuery), $options: "i" } },
-          { tags: { $regex: escapeRegex(normalizedQuery), $options: "i" } },
-          { collections: { $regex: escapeRegex(normalizedQuery), $options: "i" } }
-        ]
-      });
+      // 🔥 NORMAL SEARCH — original + all synonym terms
+      const orConds = buildOrConds(allSearchTerms);
+      if (orConds.length) searchConditions.push({ $or: orConds });
     }
 
     // =========================
@@ -446,6 +495,7 @@ router.get("/search", async (req, res) => {
       vendor
       image
       price
+      description
       createdAt
       shopifyCreatedAt
       shopifyPublishedAt
@@ -509,8 +559,12 @@ router.get("/search", async (req, res) => {
       normalizedQuery.length >= 3
     ) {
 
-      const qTokens =
-        normalizedQuery.split(" ").filter(t => t.length >= 3);
+      // Include synonym tokens in fuzzy matching
+      const qTokens = [...new Set(
+        allSearchTerms
+          .flatMap(t => t.split(" "))
+          .filter(t => t.length >= 3)
+      )];
 
       if (qTokens.length) {
 
@@ -525,7 +579,7 @@ router.get("/search", async (req, res) => {
           .limit(2000)
           .lean()
           .select(`
-            title vendor handle image price
+            title vendor handle image price description
             searchableText tags collections
             createdAt shopifyCreatedAt shopifyPublishedAt firstPublishedAt status
           `);
@@ -535,7 +589,10 @@ router.get("/search", async (req, res) => {
         pool.forEach(p => {
           if (existingIds.has(String(p._id))) return;
 
-          const haystack = (p.searchableText || p.title || "").toLowerCase();
+          const haystack = [
+            p.searchableText || p.title || "",
+            searchOpts.searchInDescription ? (p.description || "") : ""
+          ].join(" ").toLowerCase();
           const hTokens = haystack.split(/[\s\-|_/,.]+/).filter(Boolean);
 
           let isMatch = false;
@@ -794,6 +851,31 @@ router.get("/search", async (req, res) => {
         });
       }
 
+      // ======================
+      // SYNONYM MATCH BOOST
+      // Products matching synonym terms get extra relevance signal
+      // ======================
+      synonymWords.forEach(syn => {
+        if (title.includes(syn))      score += 8000;
+        if (searchable.includes(syn)) score += 4000;
+        if (tags.includes(syn))       score += 3000;
+        if (collections.includes(syn)) score += 2000;
+      });
+
+      // ======================
+      // DESCRIPTION MATCH (when searchInDescription enabled)
+      // ======================
+      if (searchOpts.searchInDescription) {
+        const desc = (p.description || "").toLowerCase();
+        if (desc.includes(normalizedQuery)) score += 4000;
+        synonymWords.forEach(syn => {
+          if (desc.includes(syn)) score += 2000;
+        });
+        remainingTokens.forEach(t => {
+          if (desc.includes(t)) score += 1500;
+        });
+      }
+
       return {
         ...p,
         keywordHits,
@@ -926,6 +1008,11 @@ router.get("/search", async (req, res) => {
 
             )[0];
 
+          const latestTime =
+            latestProduct
+              ? latestProductTime(latestProduct)
+              : 0;
+
           return {
 
             title:
@@ -936,19 +1023,27 @@ router.get("/search", async (req, res) => {
 
             latestDate:
               latestProduct
-                ? new Date(latestProductTime(latestProduct))
+                ? new Date(latestTime)
                 : null,
 
+            // Recency of latest product is PRIMARY signal.
+            // Capped product-based score prevents old brands with many products from dominating.
             score:
-
-              vendorProducts
-                .reduce(
-                  (acc, p) =>
-                    acc + (
-                      p.score || 0
-                    ),
+              recencyScore(latestTime, {
+                day1: 80000,
+                day3: 60000,
+                day7: 40000,
+                day30: 20000,
+                day90: 5000,
+                day180: 1000
+              }) +
+              Math.min(
+                vendorProducts.reduce(
+                  (acc, p) => acc + (p.score || 0),
                   0
-                )
+                ) * 0.05,
+                25000
+              )
 
           };
 
@@ -1102,9 +1197,9 @@ router.get("/search", async (req, res) => {
             : 0;
 
         let collectionScore =
-          Math.min(topProductScore * 0.45, 90000) +
-          Math.min(averageProductScore * 0.25, 45000) +
-          Math.min(relatedProducts.length * 2500, 20000);
+          Math.min(topProductScore * 0.30, 60000) +
+          Math.min(averageProductScore * 0.15, 25000) +
+          Math.min(relatedProducts.length * 800, 6000);
 
         const title = (c.title || "").toLowerCase();
 
@@ -1171,27 +1266,28 @@ router.get("/search", async (req, res) => {
             latestProductTimeValue
           );
 
+        // Collection publish date is PRIMARY recency signal (shopifyPublishedAt → recently published collections rank higher)
         collectionScore += recencyScore(
           collectionTime,
           {
-            day1: 45000,
-            day3: 35000,
-            day7: 25000,
-            day30: 14000,
-            day90: 5000,
-            day180: 1000
+            day1: 100000,
+            day3: 75000,
+            day7: 50000,
+            day30: 25000,
+            day90: 8000,
+            day180: 2000
           }
         );
 
         collectionScore += recencyScore(
           latestProductTimeValue,
           {
-            day1: 35000,
-            day3: 28000,
+            day1: 40000,
+            day3: 30000,
             day7: 20000,
             day30: 10000,
-            day90: 3500,
-            day180: 800
+            day90: 3000,
+            day180: 500
           }
         );
 
@@ -1313,6 +1409,7 @@ router.get("/search", async (req, res) => {
       meta: {
         originalQuery,
         finalQuery,
+        synonymsApplied: synonymWords,
         detectedVendor,
         remainingQuery,
         totalProducts:
@@ -1386,6 +1483,18 @@ router.get("/trending-brands", async (req, res) => {
       });
 
     }
+
+    // =========================
+    // TRENDING SETTINGS (pinned brands)
+    // =========================
+
+    const trendingSettingsDoc =
+      await TrendingSettings.findOne({ store: cleanStore }).lean();
+
+    const pinnedBrandNames =
+      new Set(
+        (trendingSettingsDoc?.pinnedBrandNames || []).map(b => b.toLowerCase())
+      );
 
     // =========================
     // FEATURED BRANDS
@@ -1688,8 +1797,9 @@ router.get("/trending-brands", async (req, res) => {
         p.createdAt ||
         null;
 
+      // publishedAt from Shopify reflects current publish date (catches re-published products)
       p.stableTime =
-        latestProductTime(p);
+        toTime(p.publishedAt) || latestProductTime(p);
     });
 
     // =========================
@@ -1838,22 +1948,22 @@ router.get("/trending-brands", async (req, res) => {
 
     // =========================
     // FINAL BRANDS
+    // Pinned brands always appear first (admin control)
     // =========================
 
-    const brands =
-
+    const allBrandsSorted =
       Object.values(brandMap)
-
         .sort((a, b) => {
-          if (b.score !== a.score) {
-            return b.score - a.score;
-          }
-
+          const aPinned = pinnedBrandNames.has(a.title?.toLowerCase());
+          const bPinned = pinnedBrandNames.has(b.title?.toLowerCase());
+          if (aPinned !== bPinned) return aPinned ? -1 : 1;
+          if (b.score !== a.score) return b.score - a.score;
           return (b.latestTime || 0) - (a.latestTime || 0);
-        })
+        });
 
+    const brands =
+      allBrandsSorted
         .slice(0, 10)
-
         .map(b => ({
 
           title:
@@ -1866,7 +1976,10 @@ router.get("/trending-brands", async (req, res) => {
             b.latestDate,
 
           totalProducts:
-            b.products.length
+            b.products.length,
+
+          pinned:
+            pinnedBrandNames.has(b.title?.toLowerCase())
 
         }));
 
@@ -1926,486 +2039,174 @@ router.get("/trending", async (req, res) => {
     const rawStore = store || shop;
 
     if (!rawStore) {
-
-      return res.status(400).json({
-        error: "Store is required"
-      });
-
+      return res.status(400).json({ error: "Store is required" });
     }
-
-    // =========================
-    // CLEAN STORE
-    // =========================
 
     const cleanStore = normalizeDomain(rawStore);
 
     // =========================
-    // MATCH STORE
+    // VERIFY STORE EXISTS
     // =========================
 
-    const matchedStores =
-      await Store.find({
-        domain: {
-          $regex: new RegExp(
-            `^${escapeRegex(cleanStore)}$`,
-            "i"
-          )
-        }
-      }).lean();
+    const storeExists = await Store.findOne({
+      domain: {
+        $regex: new RegExp(`^${escapeRegex(cleanStore)}$`, "i")
+      }
+    }).lean();
 
-    if (!matchedStores.length) {
-
+    if (!storeExists) {
       return res.json([]);
-
     }
 
     // =========================
-    // FETCH PRODUCTS
+    // TRENDING SETTINGS (admin control)
     // =========================
 
-    const results =
-      await Promise.all(
+    const trendingSettings =
+      await TrendingSettings.findOne({ store: cleanStore }).lean();
 
-        matchedStores.map(async (shopStore) => {
+    const windowDays =
+      trendingSettings?.analyticsWindowDays || 7;
 
-          try {
+    const maxProducts =
+      trendingSettings?.maxTrendingProducts || 12;
 
-            const cleanDomain =
-              shopStore.domain
-                .replace(/^https?:\/\//, "")
-                .replace(/\/$/, "");
-
-            const response =
-              await fetch(
-
-                `https://${cleanDomain}/admin/api/2026-04/graphql.json`,
-
-                {
-                  method: "POST",
-
-                  headers: {
-
-                    "X-Shopify-Access-Token":
-                      shopStore.accessToken,
-
-                    "Content-Type":
-                      "application/json",
-
-                  },
-
-                  body: JSON.stringify({
-
-                    query: `
-                    {
-                      products(
-                        first: 60,
-                        sortKey: CREATED_AT,
-                        reverse: true,
-                        query: "status:active"
-                      ) {
-
-                        edges {
-
-                          node {
-
-                            id
-                            title
-                            handle
-                            vendor
-                            createdAt
-                            updatedAt
-                            publishedAt
-                            status
-
-                            images(first: 1) {
-                              edges {
-                                node {
-                                  url
-                                }
-                              }
-                            }
-
-                            variants(first: 1) {
-                              edges {
-                                node {
-                                  price
-                                }
-                              }
-                            }
-
-                          }
-
-                        }
-
-                      }
-                    }
-                    `,
-
-                  }),
-
-                }
-
-              );
-
-            const data =
-              await response.json();
-
-            // =========================
-            // GRAPHQL ERROR DEBUG
-            // =========================
-
-            if (data?.errors) {
-
-              console.error(
-                "SHOPIFY GRAPHQL ERROR:",
-                cleanDomain,
-                data.errors
-              );
-
-              return [];
-
-            }
-
-            const products =
-              data?.data?.products?.edges || [];
-
-            return products.map(({ node }) => ({
-
-              id:
-                node?.id || "",
-
-              title:
-                node?.title || "",
-
-              handle:
-                node?.handle || "",
-
-              vendor:
-                node?.vendor || "",
-
-              createdAt:
-                node?.createdAt || null,
-
-              updatedAt:
-                node?.updatedAt || null,
-
-              publishedAt:
-                node?.publishedAt || null,
-
-              status:
-                node?.status || "",
-
-              timestamp:
-                new Date(
-                  node?.publishedAt ||
-                  node?.createdAt ||
-                  0
-                ).getTime(),
-
-              image:
-                node?.images?.edges?.[0]
-                  ?.node?.url || "",
-
-              price:
-                Number(
-                  node?.variants?.edges?.[0]
-                    ?.node?.price || 0
-                ),
-
-              store:
-                cleanDomain,
-
-            }));
-
-          } catch (err) {
-
-            console.error(
-              "TRENDING FETCH ERROR:",
-              shopStore.domain,
-              err.message
-            );
-
-            return [];
-
-          }
-
-        })
-
-      );
+    const pinnedProductIds =
+      new Set(trendingSettings?.pinnedProductIds || []);
 
     // =========================
-    // ANALYTICS
+    // TIME-WINDOWED ANALYTICS
+    // Only last N days count — this makes trending rotate automatically
     // =========================
+
+    const windowStart =
+      new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
 
     const analyticsData =
       await Analytics.aggregate([
-
         {
           $match: {
-
             store: cleanStore,
-
-            productId: {
-              $exists: true,
-              $ne: null
-            }
-
+            productId: { $exists: true, $ne: null },
+            createdAt: { $gte: windowStart }
           }
         },
-
         {
           $group: {
-
             _id: "$productId",
-
             clicks: {
-              $sum: {
-                $cond: [
-                  {
-                    $eq: [
-                      "$type",
-                      "click"
-                    ]
-                  },
-                  1,
-                  0
-                ]
-              }
+              $sum: { $cond: [{ $eq: ["$type", "click"] }, 1, 0] }
             },
-
             searches: {
-              $sum: {
-                $cond: [
-                  {
-                    $eq: [
-                      "$type",
-                      "search"
-                    ]
-                  },
-                  1,
-                  0
-                ]
-              }
+              $sum: { $cond: [{ $eq: ["$type", "search"] }, 1, 0] }
             }
-
           }
-
         }
-
       ]);
 
-    // =========================
-    // ANALYTICS MAP
-    // =========================
-
     const analyticsMap = {};
-
     analyticsData.forEach(item => {
-
       analyticsMap[item._id] = item;
-
     });
 
     // =========================
-    // PRODUCTS
+    // FETCH PRODUCTS FROM DB
+    // Much larger pool than Shopify API's 60-product limit
     // =========================
 
-    let products =
-      results
-        .flat()
-        .filter(product => {
-
-          return (
-            product.status === "ACTIVE" &&
-            product.publishedAt &&
-            product.handle
-          );
-
-        });
-
-    const productIds =
-      products.map(p => p.id).filter(Boolean);
-
-    const productFreshnessDocs =
-      productIds.length
-        ? await Product.find({
-          store: cleanStore,
-          productId: { $in: productIds }
-        })
-          .select("productId firstPublishedAt shopifyCreatedAt")
-          .lean()
-        : [];
-
-    const productFreshnessMap = {};
-
-    productFreshnessDocs.forEach(p => {
-      productFreshnessMap[String(p.productId)] = p;
-    });
-
-    products.forEach(product => {
-      const dbProduct =
-        productFreshnessMap[String(product.id)];
-
-      product.firstPublishedAt =
-        dbProduct?.firstPublishedAt || null;
-
-      product.shopifyCreatedAt =
-        dbProduct?.shopifyCreatedAt ||
-        product.createdAt ||
-        null;
-
-      product.stableTime =
-        latestProductTime(product);
-    });
-
-    products.sort(
-      (a, b) =>
-        (b.stableTime || 0) -
-        (a.stableTime || 0)
-    );
-
-    // =========================
-    // REMOVE DUPLICATES
-    // =========================
-
-    const uniqueMap = new Map();
-
-    products.forEach(product => {
-
-      if (
-        !uniqueMap.has(product.id)
-      ) {
-
-        uniqueMap.set(
-          product.id,
-          product
-        );
-
-      }
-
-    });
-
-    products =
-      [...uniqueMap.values()];
+    const dbProducts = await Product.find({
+      store: cleanStore,
+      status: "ACTIVE"
+    })
+      .sort({ firstPublishedAt: -1, shopifyCreatedAt: -1 })
+      .limit(500)
+      .lean()
+      .select(
+        "productId title handle vendor image price " +
+        "firstPublishedAt shopifyCreatedAt shopifyPublishedAt publishedAt status"
+      );
 
     // =========================
     // SCORE PRODUCTS
+    // Analytics = PRIMARY signal, Recency = SECONDARY signal
     // =========================
 
-    const scoredProducts =
-      products.map(product => {
+    const scoredProducts = dbProducts.map(product => {
 
-        let score = 0;
+      let score = 0;
 
-        // =========================
-        // ANALYTICS SCORE
-        // =========================
+      const analytics = analyticsMap[String(product.productId)];
 
-        const analytics =
-          analyticsMap[
-          product.id
-          ];
+      if (analytics) {
+        // Clicks worth much more — clicking = real purchase intent
+        score += Math.min(
+          (analytics.clicks || 0) * 8000 +
+          (analytics.searches || 0) * 2000,
+          400000
+        );
+      }
 
-        if (analytics) {
+      const productTime = latestProductTime(product);
+      const daysOld = daysSinceTime(productTime);
 
-          score += Math.min(
-            (analytics.clicks || 0) * 2500 +
-            (analytics.searches || 0) * 1000,
-            120000
-          );
+      if (daysOld <= 1) {
+        score += 60000;
+      } else if (daysOld <= 3) {
+        score += 45000;
+      } else if (daysOld <= 7) {
+        score += 30000;
+      } else if (daysOld <= 30) {
+        score += 12000;
+      } else if (daysOld <= 90) {
+        score += 4000;
+      } else if (daysOld > 365) {
+        score -= 20000;
+      }
 
-          // LOW ENGAGEMENT PENALTY
-          if (
-            (analytics.clicks || 0) < 2 &&
-            (analytics.searches || 0) < 2
-          ) {
+      return {
+        id: product.productId,
+        title: product.title || "",
+        handle: product.handle || "",
+        vendor: product.vendor || "",
+        image: product.image || "",
+        price: product.price || 0,
+        publishedAt: product.shopifyPublishedAt || product.publishedAt || null,
+        createdAt: product.shopifyCreatedAt || null,
+        status: product.status || "ACTIVE",
+        score,
+        stableTime: productTime
+      };
 
-            score -= 1000;
-
-          }
-
-        }
-
-        // =========================
-        // RECENCY BOOST
-        // =========================
-
-        const daysOld =
-          (
-            Date.now() -
-            (product.stableTime || 0)
-          ) / (1000 * 60 * 60 * 24);
-
-        if (daysOld <= 3) {
-
-          score += 800000;
-
-        } else if (daysOld <= 7) {
-
-          score += 500000;
-
-        } else if (daysOld <= 30) {
-
-          score += 250000;
-
-        } else if (daysOld <= 90) {
-
-          score += 100000;
-
-        } else if (daysOld <= 180) {
-
-          score += 30000;
-
-        } else if (daysOld > 365) {
-
-          score -= 30000;
-
-        }
-
-        return {
-
-          ...product,
-          score
-
-        };
-
-      });
+    });
 
     // =========================
-    // FINAL PRODUCTS
+    // PINNED PRODUCTS FIRST, THEN DYNAMIC
     // =========================
 
-    const trendingProducts =
-      scoredProducts
+    const pinned = scoredProducts.filter(p =>
+      pinnedProductIds.has(String(p.id))
+    );
 
-        .sort((a, b) => {
-          if (b.score !== a.score) {
-            return b.score - a.score;
-          }
+    const dynamic = scoredProducts
+      .filter(p => !pinnedProductIds.has(String(p.id)))
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return (b.stableTime || 0) - (a.stableTime || 0);
+      })
+      .slice(0, maxProducts - pinned.length);
 
-          return (b.stableTime || 0) - (a.stableTime || 0);
-        })
-
-        .slice(0, 12);
+    const trendingProducts = [...pinned, ...dynamic].slice(0, maxProducts);
 
     // =========================
     // RESPONSE
     // =========================
 
-    res.json(
-      trendingProducts
-    );
+    res.json(trendingProducts);
 
   } catch (err) {
 
-    console.error(
-      "TRENDING PRODUCTS ERROR:",
-      err
-    );
-
-    res.status(500).json({
-      error: err.message
-    });
+    console.error("TRENDING PRODUCTS ERROR:", err);
+    res.status(500).json({ error: err.message });
 
   }
 
@@ -2420,7 +2221,6 @@ router.get("/trending-collections", async (req, res) => {
       return res.json({ collections: [] });
     }
 
-    // /trending jaisa store match
     const cleanStore = normalizeDomain(rawStore);
 
     const matchedStores = await Store.find({
@@ -2433,19 +2233,47 @@ router.get("/trending-collections", async (req, res) => {
       return res.json({ collections: [] });
     }
 
-    // fetch latest 20 collections for the store, sort by firstPublishedAt desc
-    const collections = await Collection.find({
-      store: cleanStore
+    // =========================
+    // ADMIN PINNED COLLECTIONS
+    // =========================
+
+    const trendingSettings =
+      await TrendingSettings.findOne({ store: cleanStore }).lean();
+
+    const pinnedCollectionIds =
+      trendingSettings?.pinnedCollectionIds || [];
+
+    let pinnedCollections = [];
+
+    if (pinnedCollectionIds.length) {
+      pinnedCollections = await Collection.find({
+        store: cleanStore,
+        collectionId: { $in: pinnedCollectionIds.map(String) }
+      }).lean();
+    }
+
+    // =========================
+    // DYNAMIC: Sort by shopifyPublishedAt
+    // (most recently published collections appear first)
+    // =========================
+
+    const dynamicCollections = await Collection.find({
+      store: cleanStore,
+      ...(pinnedCollectionIds.length && {
+        collectionId: { $nin: pinnedCollectionIds.map(String) }
+      })
     })
       .sort({
-        firstPublishedAt: -1,
+        shopifyPublishedAt: -1,
         shopifyCreatedAt: -1
       })
       .limit(20)
       .lean();
 
+    const allCollections = [...pinnedCollections, ...dynamicCollections];
+
     const formattedCollections =
-      collections
+      allCollections
         .filter(c =>
           c.handle &&
           c.title &&
@@ -2458,18 +2286,6 @@ router.get("/trending-collections", async (req, res) => {
           handle: c.handle,
           image: c.image || ""
         }));
-
-    console.log(
-      "DB COLLECTIONS:",
-      collections.length
-    );
-
-    console.log(
-      "COLLECTION TITLES:",
-      formattedCollections.map(
-        c => c.title
-      )
-    );
 
     return res.json({
       collections: formattedCollections
