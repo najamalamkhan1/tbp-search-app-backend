@@ -15,6 +15,51 @@ router.use((req, res, next) => {
 const verifyShopifyWebhook =
   require("../middleware/verifyShopifyWebhook");
 
+const _COLOR_TAGS_WH = new Set([
+  'black','white','red','blue','green','yellow','pink','orange','purple',
+  'maroon','navy','grey','gray','beige','cream','golden','gold','silver',
+  'nude','ivory','mint','teal','mustard','burgundy','olive','rust','coral',
+  'peach','lilac','lavender','rose','brown','tan','blush','turquoise',
+  'magenta','fuchsia','emerald','violet','caramel','charcoal','champagne',
+]);
+const _WH_COLOR_NORM = { gray: 'grey', gold: 'golden' };
+
+function extractWebhookColors({ options = [], tags = [], title = '' }) {
+  const found = new Set();
+  const add = (v) => {
+    const c = (v || '').toLowerCase().trim().replace(/\s+/g, ' ');
+    if (c.length > 1 && c !== 'default title' && c !== 'none') {
+      found.add(_WH_COLOR_NORM[c] || c);
+    }
+  };
+
+  // From product.options (Color/Colour option)
+  (options || []).forEach(opt => {
+    if (/^colou?r$/i.test(opt.name)) {
+      (opt.values || []).forEach(v => add(v));
+    }
+  });
+
+  // From tags
+  (tags || []).forEach(tag => {
+    const t = tag.toLowerCase().trim();
+    if (_COLOR_TAGS_WH.has(t)) add(t);
+    if (/^off[\s-]?white$/i.test(t))  add('off-white');
+    if (/^sky[\s-]?blue$/i.test(t))   add('sky blue');
+    if (/^navy[\s-]?blue$/i.test(t))  add('navy blue');
+    if (/^rose[\s-]?gold$/i.test(t))  add('rose gold');
+  });
+
+  // From title
+  const tl = (title || '').toLowerCase();
+  tl.split(/[\s\-|_\/,\(\)]+/).forEach(w => { if (_COLOR_TAGS_WH.has(w)) add(w); });
+  if (/off[\s-]?white/i.test(tl)) add('off-white');
+  if (/navy[\s-]?blue/i.test(tl)) add('navy blue');
+  if (/rose[\s-]?gold/i.test(tl)) add('rose gold');
+
+  return [...found];
+}
+
 // =====================================
 // CREATE PRODUCT
 // =====================================
@@ -68,6 +113,12 @@ ${product.product_type || ""}
 ${product.tags || ""}
 
       `.toLowerCase();
+
+      const webhookColors = extractWebhookColors({
+        options: product.options || [],
+        tags: product.tags ? product.tags.split(",").map(t => t.trim()) : [],
+        title: product.title || ''
+      });
 
       await Product.findOneAndUpdate(
 
@@ -148,6 +199,8 @@ ${product.tags || ""}
               : null,
 
           searchableText,
+
+          colors: webhookColors,
 
           updatedAt:
             new Date()
@@ -236,6 +289,12 @@ ${product.tags || ""}
 
       `.toLowerCase();
 
+      const webhookColors = extractWebhookColors({
+        options: product.options || [],
+        tags: product.tags ? product.tags.split(",").map(t => t.trim()) : [],
+        title: product.title || ''
+      });
+
       await Product.findOneAndUpdate(
 
         {
@@ -315,6 +374,8 @@ ${product.tags || ""}
               : null,
 
           searchableText,
+
+          colors: webhookColors,
 
           updatedAt:
             new Date()

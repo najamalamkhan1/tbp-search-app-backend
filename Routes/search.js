@@ -11,6 +11,447 @@ const FeaturedBrand = require("../Models/featuredBrandsModel");
 const TrendingSettings = require("../Models/trendingSettingsModel");
 const Settings = require("../Models/settingsModel");
 const stringSimilarity = require("string-similarity");
+// =========================
+// AI EXPANSION (Groq Llama)
+// =========================
+
+const aiCache = {};
+const AI_CACHE_TTL = 1000 * 60 * 30; // 30 min — reduces AI calls significantly
+const aiInFlight = new Map(); // in-flight dedup: same query → share one AI call
+
+const AI_PRIMARY_MODEL = "llama-3.3-70b-versatile";
+const AI_FALLBACK_MODEL = "llama-3.1-8b-instant";
+const SAFE_EXPANSION_MODELS = new Set([
+  "llama-3.3-70b-versatile",
+  "llama-3.1-8b-instant"
+]);
+
+async function _callExpansionModel(query, modelName, apiKey, prompt) {
+  try {
+    const response = await Promise.race([
+      fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: modelName, messages: [{ role: "user", content: prompt }], max_tokens: 900, temperature: 0 })
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("AI timeout")), 4000))
+    ]);
+
+    // Fast-fail on any non-200 — no waiting, no retries in real-time search
+    if (!response.ok) {
+      console.warn(`[AI] ${modelName} HTTP ${response.status}`);
+      return null;
+    }
+
+    const json = await response.json();
+    if (json?.error) {
+      console.warn(`[AI] ${modelName} error:`, json.error?.message || json.error);
+      return null;
+    }
+
+    const text = (json?.choices?.[0]?.message?.content || "")
+      .replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      console.warn(`[AI] ${modelName} no JSON in response: ${text.slice(0, 150)}`);
+      return null;
+    }
+    return JSON.parse(jsonMatch[0]);
+  } catch (e) {
+    console.warn(`[AI] ${modelName} exception:`, e.message);
+    return null;
+  }
+}
+
+async function getAiExpansion(query, modelName = AI_PRIMARY_MODEL, storeContext = {}) {
+  const key = query.toLowerCase().trim();
+
+  // 1. Cache hit
+  const cached = aiCache[key];
+  if (cached && Date.now() - cached.timestamp < AI_CACHE_TTL) return cached.data;
+
+  // 2. In-flight dedup — if same query already processing, share the result
+  if (aiInFlight.has(key)) return aiInFlight.get(key);
+
+  const promise = _runAiExpansion(key, query, modelName, storeContext);
+  aiInFlight.set(key, promise);
+  promise.finally(() => aiInFlight.delete(key));
+  return promise;
+}
+
+async function _runAiExpansion(key, query, modelName, storeContext) {
+  try {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) { console.error("[AI] GROQ_API_KEY missing"); return null; }
+    console.log(`[AI] Expansion → model: ${modelName}, query: "${query}"`);
+
+    const vendors = (storeContext.vendors || []).slice(0, 50);
+    const productTypes = storeContext.productTypes || [];
+
+    // Store-specific prompt tuned for Nainpreet — Pakistani luxury pret store
+    const prompt = `You are a search query analyzer for a Pakistani luxury pret fashion store. Return structured JSON only.
+
+STORE CONTEXT:
+Brands: ${vendors.length ? vendors.join(", ") : "none"}
+Product Types: ${productTypes.length ? productTypes.join(", ") : "kurta, co-ord set, salwar suit, 3-piece suit, lawn suit, kaftan, tissue wear, formal wear, casual wear, bridal, couture, accessories"}
+
+QUERY: "${query}"
+
+STORE SPECIALIZES IN: Pakistani luxury pret — kurtas, co-ord sets, 3-piece salwar suits (shirt+dupatta+trouser), lawn suits, kaftans, tissue wear, formal/bridal couture, accessories. Brands include top Pakistani designers.
+
+RULES:
+Language: English/Urdu/Roman Urdu mixed.
+Urdu colors: mehroon=maroon, burgundy=maroon, wine=maroon, lal=red, kala/kali=black, safed=white, gulabi=pink, neela/neeli=blue, hara/hari=green, peela/peeli=yellow, surmai=grey, jamni=purple, sunehra=golden, asmani=sky blue, firozi=turquoise, skin=nude, off white=off-white
+Urdu occasions: shadi/barat/baraat=wedding, dawat/function/dinner=party, valima/waleema=wedding, mehndi=mehndi, eid=festive, daftar/office=formal, rozana/daily=casual
+Urdu product types: jora=suit, dupatta=dupatta, shalwar kameez=salwar suit, lehnga=lehenga, gharara=gharara, kurta=kurta
+Brands: ONLY from Available Brands above. brands=[] if not found. confidence>90% required. Never treat colors/occasions/fabric/product-types as brands.
+Colors: ONLY if explicitly mentioned in query. Never guess. Normalize + generate colorSynonyms (e.g. maroon→["mehroon","burgundy","wine","lal"]).
+Fabric: ONLY if explicitly mentioned. Options: lawn,chiffon,organza,silk,tissue,khaddar,karandi,jacquard,net,velvet,cambric,viscose,georgette,cotton
+Occasions: dawat/dinner/party/function→party | mehndi→mehndi | barat/valima/nikah/shadi→wedding | eid→festive | office/daftar→formal | daily/university/rozana→casual | bridal/dulhan→wedding
+Attributes: ONLY if explicitly mentioned. Options: embroidered,printed,digital print,luxury,heavy,light,bridal,handwork,sequence,stone work,schiffli,nakshi,ready to wear,unstitched,stitched,3-piece,2-piece,co-ord
+Price: under/below/tak/se kam→priceMax | above/se upar→priceMin | 20k=20000 | 1 lakh=100000 | NOTE: expensive luxury items may have price=0 in system
+Intent: product_search|brand_search|collection_search|category_search|color_search|occasion_search|price_search|unknown
+searchKeywords: 4-5 English retrieval phrases specific to Pakistani fashion, same category/occasion as query, no prices, no brands. Use terms like "pret", "lawn suit", "3-piece", "embroidered", "designer" etc.
+negativeKeywords: only obvious opposites (unstitched query→["stitched"])
+searchPhrase: clean English $text search phrase using Pakistani fashion vocabulary
+
+Return ONLY valid JSON, no markdown, no explanation:
+{"originalQuery":"","correctedQuery":"","intent":"","confidence":0,"brands":[],"categories":[],"subCategories":[],"collections":[],"colors":[],"colorSynonyms":[],"fabric":[],"materials":[],"gender":[],"ageGroup":[],"sizes":[],"occasion":[],"season":[],"attributes":[],"style":[],"embellishment":[],"priceMin":null,"priceMax":null,"keywords":[],"searchKeywords":[],"negativeKeywords":[],"shouldApplyBrandFilter":false,"shouldApplyColorFilter":false,"shouldApplyCategoryFilter":false,"shouldApplyCollectionFilter":false,"searchPhrase":""}`;
+
+    // Hard cap: 8s max — timer cancelled as soon as AI resolves (no stale logs)
+    let hardTimer;
+    const hardTimeout = new Promise(resolve => { hardTimer = setTimeout(() => resolve(null), 8000); });
+    let parsed = await Promise.race([
+      (async () => {
+        let result = await _callExpansionModel(query, modelName, apiKey, prompt);
+        if (!result && modelName !== AI_FALLBACK_MODEL) {
+          console.warn(`[AI] Primary failed, trying Groq fallback: ${AI_FALLBACK_MODEL}`);
+          result = await _callExpansionModel(query, AI_FALLBACK_MODEL, apiKey, prompt);
+        }
+        // DeepSeek/Gemini fallback disabled for now.
+        return result;
+      })(),
+      hardTimeout
+    ]);
+    clearTimeout(hardTimer);
+    if (!parsed) return null;
+
+    const VALID_OCCASIONS = new Set(['eid', 'mehndi', 'barat', 'valima', 'nikkah', 'wedding', 'party', 'festive', 'casual', 'formal', 'bridal', 'summer', 'winter']);
+
+    // Parse occasions array (new schema has occasion as array)
+    const occasionsArr = (Array.isArray(parsed.occasion) ? parsed.occasion : (parsed.occasion ? [parsed.occasion] : []))
+      .map(o => (o || '').toLowerCase().trim())
+      .filter(o => VALID_OCCASIONS.has(o));
+
+    // Parse colors array
+    const colorsArr = (Array.isArray(parsed.colors) ? parsed.colors : (parsed.colors ? [parsed.colors] : []))
+      .map(c => (c || '').toLowerCase().trim())
+      .filter(Boolean);
+
+    // Parse brands array
+    const brandsArr = (Array.isArray(parsed.brands) ? parsed.brands : [])
+      .map(b => (b || '').toLowerCase().trim())
+      .filter(b => b.length > 1);
+
+    // searchKeywords — shown as suggestions and used for scoring
+    const searchKeywords = (Array.isArray(parsed.searchKeywords) ? parsed.searchKeywords : [])
+      .map(r => (r || '').toLowerCase().trim())
+      .filter(r => r.length >= 2)
+      .slice(0, 6);
+
+    const data = {
+      // ── Backward-compat fields (existing search logic uses these) ──
+      corrected: (parsed.correctedQuery || '').toLowerCase().trim() || null,
+      brandHint: brandsArr[0] || null,
+      maxPrice: typeof parsed.priceMax === 'number' && parsed.priceMax > 0 ? parsed.priceMax : null,
+      minPrice: typeof parsed.priceMin === 'number' && parsed.priceMin > 0 ? parsed.priceMin : null,
+      color: colorsArr[0] || null,
+      productType: (Array.isArray(parsed.subCategories) && parsed.subCategories[0])
+        ? parsed.subCategories[0].toLowerCase().trim()
+        : ((Array.isArray(parsed.categories) && parsed.categories[0]) ? parsed.categories[0].toLowerCase().trim() : null),
+      occasion: occasionsArr[0] || null,
+      related: searchKeywords,
+
+      // ── Extended fields ──
+      intent: (parsed.intent || 'product_search').toLowerCase(),
+      confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0,
+      brands: brandsArr,
+      categories: (Array.isArray(parsed.categories) ? parsed.categories : []).map(c => c.toLowerCase().trim()),
+      subCategories: (Array.isArray(parsed.subCategories) ? parsed.subCategories : []).map(s => s.toLowerCase().trim()),
+      aiCollections: (Array.isArray(parsed.collections) ? parsed.collections : []).map(c => c.toLowerCase().trim()),
+      colors: colorsArr,
+      colorSynonyms: (Array.isArray(parsed.colorSynonyms) ? parsed.colorSynonyms : []).map(c => c.toLowerCase().trim()),
+      fabric: (Array.isArray(parsed.fabric) ? parsed.fabric : []).map(f => f.toLowerCase().trim()),
+      materials: (Array.isArray(parsed.materials) ? parsed.materials : []).map(m => m.toLowerCase().trim()),
+      gender: (Array.isArray(parsed.gender) ? parsed.gender : []).map(g => g.toLowerCase().trim()),
+      ageGroup: (Array.isArray(parsed.ageGroup) ? parsed.ageGroup : []).map(a => a.toLowerCase().trim()),
+      sizes: (Array.isArray(parsed.sizes) ? parsed.sizes : []).map(s => s.toLowerCase().trim()),
+      occasions: occasionsArr,
+      season: (Array.isArray(parsed.season) ? parsed.season : []).map(s => s.toLowerCase().trim()),
+      attributes: (Array.isArray(parsed.attributes) ? parsed.attributes : []).map(a => a.toLowerCase().trim()),
+      style: (Array.isArray(parsed.style) ? parsed.style : []).map(s => s.toLowerCase().trim()),
+      embellishment: (Array.isArray(parsed.embellishment) ? parsed.embellishment : []).map(e => e.toLowerCase().trim()),
+      searchKeywords,
+      negativeKeywords: (Array.isArray(parsed.negativeKeywords) ? parsed.negativeKeywords : []).map(n => n.toLowerCase().trim()),
+      shouldApplyBrandFilter: Boolean(parsed.shouldApplyBrandFilter),
+      shouldApplyColorFilter: Boolean(parsed.shouldApplyColorFilter),
+      shouldApplyCategoryFilter: Boolean(parsed.shouldApplyCategoryFilter),
+      shouldApplyCollectionFilter: Boolean(parsed.shouldApplyCollectionFilter),
+      searchPhrase: typeof parsed.searchPhrase === 'string' ? parsed.searchPhrase.toLowerCase().trim() : null,
+    };
+
+    // Occasion cross-contamination guard: strip bridal terms from casual queries and vice versa
+    const queryHasBridal = ['bridal', 'barat', 'valima', 'waleema', 'nikah', 'nikkah', 'dulhan', 'bride', 'shadi', 'mehndi'].some(t => key.includes(t));
+    const queryIsCasual = ['party', 'dinner', 'casual', 'office', 'daily', 'festive', 'function', 'event', 'dawat'].some(t => key.includes(t));
+
+    if (!queryHasBridal && data.related.length) {
+      const BRIDAL_TERMS = ['bridal', 'barat', 'valima', 'waleema', 'nikah', 'dulhan', 'mehndi', 'mangni', 'bride', 'heavy bridal'];
+      data.related = data.related.filter(term => !BRIDAL_TERMS.some(bt => term.includes(bt)));
+      data.searchKeywords = data.related;
+    }
+    if (queryIsCasual && !queryHasBridal && data.related.length) {
+      data.related = data.related.filter(term => !['wedding', 'shadi'].some(bt => term.includes(bt)));
+      data.searchKeywords = data.related;
+    }
+
+    aiCache[key] = { data, timestamp: Date.now() };
+    return data;
+
+  } catch (err) {
+    console.error(`[AI] Exception (model: ${modelName}):`, err.message);
+    return null;
+  }
+}
+
+// =========================
+// 💰 LOCAL PRICE PARSER
+// Parses price ceiling directly from query — no AI needed.
+// Examples: "under 100K", "below 5000", "100k tak", "2 hazar mein", "1 lakh se kam"
+// =========================
+function parseMaxPriceFromQuery(query) {
+  const q = (query || "").toLowerCase();
+
+  // "2 hazar / 2 hazaar" → 2000
+  const hazarM = q.match(/(\d+)\s*haza+r/);
+  if (hazarM) return parseInt(hazarM[1], 10) * 1000;
+
+  // "1 lakh / 1 lac" → 100000
+  const lakhM = q.match(/(\d+(?:\.\d+)?)\s*(?:lakh|lac)\b/);
+  if (lakhM) return Math.round(parseFloat(lakhM[1]) * 100000);
+
+  // "under/below/max X K"  or  "X K tak/se kam"
+  const kM = q.match(/(?:under|below|less\s*than|se\s*kam|max)\s*(\d+)\s*k\b|(\d+)\s*k\s*(?:tak|se\s*kam|mein)/);
+  if (kM) return parseInt(kM[1] || kM[2], 10) * 1000;
+
+  // "under/below X"  (plain 3+ digit number, no K)
+  const plainUnder = q.match(/(?:under|below|less\s*than|se\s*kam)\s*(\d{3,})/);
+  if (plainUnder) return parseInt(plainUnder[1], 10);
+
+  // "X tak / X mein"  (plain 3+ digit number)
+  const takM = q.match(/(\d{3,})\s*(?:tak|se\s*kam|mein)\b/);
+  if (takM) return parseInt(takM[1], 10);
+
+  return null;
+}
+
+// =========================
+// 🎨 COLOR DETECTION
+// Parses color(s) from the query — supports English + Roman Urdu color words.
+// Returns normalized English color names (e.g. "lal" → "red", "kala" → "black").
+// =========================
+const QUERY_COLORS = new Map([
+  // English
+  ["black", "black"], ["white", "white"], ["red", "red"], ["blue", "blue"], ["green", "green"],
+  ["yellow", "yellow"], ["pink", "pink"], ["orange", "orange"], ["purple", "purple"],
+  ["maroon", "maroon"], ["navy", "navy"], ["grey", "grey"], ["gray", "grey"],
+  ["beige", "beige"], ["cream", "cream"], ["golden", "golden"], ["gold", "golden"],
+  ["silver", "silver"], ["nude", "nude"], ["ivory", "ivory"], ["mint", "mint"],
+  ["teal", "teal"], ["mustard", "mustard"], ["burgundy", "burgundy"], ["olive", "olive"],
+  ["rust", "rust"], ["coral", "coral"], ["peach", "peach"], ["lilac", "lilac"],
+  ["lavender", "lavender"], ["rose", "rose"], ["brown", "brown"], ["tan", "tan"],
+  ["blush", "blush"], ["turquoise", "turquoise"], ["magenta", "magenta"],
+  ["fuchsia", "fuchsia"], ["emerald", "emerald"], ["violet", "violet"],
+  ["caramel", "caramel"], ["charcoal", "charcoal"], ["champagne", "champagne"],
+  // Roman Urdu
+  ["lal", "red"], ["safed", "white"], ["kala", "black"], ["kali", "black"],
+  ["neela", "blue"], ["neeli", "blue"], ["hara", "green"], ["hari", "green"],
+  ["peela", "yellow"], ["peeli", "yellow"], ["gulabi", "pink"], ["surmai", "grey"],
+  ["zard", "yellow"], ["asmani", "sky blue"], ["jamni", "purple"], ["gehra", "dark"],
+]);
+
+const COMPOUND_COLORS = [
+  [/\boff[\s-]?white\b/, "off-white"],
+  [/\bsky[\s-]?blue\b/, "sky blue"],
+  [/\bnavy[\s-]?blue\b/, "navy blue"],
+  [/\blight[\s-]?pink\b/, "light pink"],
+  [/\bdeep[\s-]?red\b/, "deep red"],
+  [/\bforest[\s-]?green\b/, "forest green"],
+  [/\bpastel[\s-]?pink\b/, "pastel pink"],
+  [/\bpastel[\s-]?green\b/, "pastel green"],
+  [/\bpastel[\s-]?blue\b/, "pastel blue"],
+  [/\brose[\s-]?gold\b/, "rose gold"],
+  [/\bdark[\s-]?green\b/, "dark green"],
+  [/\bdark[\s-]?blue\b/, "dark blue"],
+];
+
+function parseColorsFromQuery(query) {
+  const q = (query || "").toLowerCase();
+  const found = [];
+  COMPOUND_COLORS.forEach(([re, color]) => {
+    if (re.test(q) && !found.includes(color)) found.push(color);
+  });
+  q.split(/\s+/).forEach(word => {
+    const clean = word.replace(/[^a-z]/g, "");
+    if (clean.length < 3) return;
+    const normalized = QUERY_COLORS.get(clean);
+    if (normalized && !found.includes(normalized)) found.push(normalized);
+  });
+  return found; // e.g. ["black"] or ["off-white", "golden"]
+}
+
+// =========================
+// 💰 MIN PRICE PARSER
+// "above 5000", "over 10k", "5000 to 15000", "50k se upar"
+// =========================
+function parseMinPriceFromQuery(query) {
+  const q = (query || "").toLowerCase();
+
+  // "above/over X k"
+  const aboveK = q.match(/(?:above|over|more\s*than|se\s*upar|se\s*zyada|minimum|min)\s*(\d+)\s*k\b/);
+  if (aboveK) return parseInt(aboveK[1], 10) * 1000;
+
+  // "above/over X" (plain 3+ digit number)
+  const abovePlain = q.match(/(?:above|over|more\s*than|se\s*upar|se\s*zyada|minimum|min)\s*(\d{3,})/);
+  if (abovePlain) return parseInt(abovePlain[1], 10);
+
+  // "X k to/se/- Y k" → min = X * 1000
+  const rangeKK = q.match(/(\d+)\s*k\s*(?:to|se|-)\s*\d+\s*k/);
+  if (rangeKK) return parseInt(rangeKK[1], 10) * 1000;
+
+  // "X to/- Y" plain 3+ digit → min = X
+  const rangePlain = q.match(/(\d{3,})\s*(?:to|-)\s*\d{3,}/);
+  if (rangePlain) return parseInt(rangePlain[1], 10);
+
+  return null;
+}
+
+// =========================
+// 💡 BUILD SUGGESTIONS
+// Cleans AI related terms — strips any price noise the AI sneaked in,
+// removes terms identical to the original query, deduplicates.
+// =========================
+const SUGGESTION_PRICE_RE = /\b(?:under|below|above|over|less\s*than|se\s*kam|tak|mein)\s*[\d]+[kK]?|\b\d+[kK]\b|\b\d{4,}\b/gi;
+
+function buildSuggestions(aiExpansion, originalQuery) {
+  if (!aiExpansion?.related?.length) return [];
+
+  const seen = new Set([originalQuery.toLowerCase().trim()]);
+  const results = [];
+
+  for (const raw of aiExpansion.related) {
+    const cleaned = (raw || "")
+      .replace(SUGGESTION_PRICE_RE, "")   // strip "under 150k", "150000" etc.
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+
+    if (cleaned.length < 3) continue;
+    if (seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    results.push({ text: cleaned, type: "ai" });
+    if (results.length >= 6) break;
+  }
+
+  return results;
+}
+
+// =========================
+// AI SUGGESTIONS (Groq Llama)
+// Autocomplete-style completions as user types
+// =========================
+
+const suggestionsCache = {};
+const SUGGESTIONS_CACHE_TTL = 1000 * 45; // 45 sec
+
+async function _callSuggestionsModel(prompt, modelName, apiKey, maxTokens = 120, temperature = 0.3) {
+  try {
+    const response = await Promise.race([
+      fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: modelName, messages: [{ role: "user", content: prompt }], max_tokens: maxTokens, temperature })
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 4000))
+    ]);
+    if (response.status === 429) { console.warn(`[Suggestions] ${modelName} rate limited`); return null; }
+    const json = await response.json();
+    if (json?.error) { console.warn(`[Suggestions] ${modelName} error:`, json.error?.message); return null; }
+    const text = (json?.choices?.[0]?.message?.content || "").replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) { console.warn(`[Suggestions] ${modelName} no JSON found`); return null; }
+    return JSON.parse(match[0]);
+  } catch (e) {
+    console.warn(`[Suggestions] ${modelName} exception:`, e.message);
+    return null;
+  }
+}
+
+async function getAiSuggestions(query, modelName = AI_FALLBACK_MODEL) {
+  const key = query.toLowerCase().trim();
+  const cached = suggestionsCache[key];
+  if (cached && Date.now() - cached.timestamp < SUGGESTIONS_CACHE_TTL) {
+    return cached.data;
+  }
+
+  try {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) return [];
+
+    const prompt = `You are an autocomplete assistant for a South Asian fashion e-commerce store.
+
+Customer typed: "${query}"
+
+Generate 5 natural search completions as dropdown suggestions.
+
+Return ONLY this JSON (no explanation):
+{"suggestions":["<s1>","<s2>","<s3>","<s4>","<s5>"]}
+
+Rules:
+- Each suggestion: complete short query, 2-5 words, English only
+- Stay within the SAME occasion/category the customer is typing about
+- Cover: product type, fabric, color, occasion variations — within scope
+- Pakistani/South Asian fashion context only
+- DO NOT suggest bridal/wedding for casual/party queries and vice versa
+
+Occasion-scoped examples:
+"party" → ["party wear dress","formal party outfit","chiffon party suit","evening party dress","dinner party outfit"]
+"mehndi" → ["mehndi function dress","mehndi outfit yellow","mehndi lehenga","colorful mehndi dress","mehndi gharara set"]
+"bridal" → ["bridal lehenga heavy","bridal collection designer","barat outfit bridal","heavy embroidered bridal","bridal gharara set"]
+"maria" → ["maria b lawn","maria b pret","maria b eid collection","maria b formal","maria b winter collection"]
+"casual" → ["casual cotton kurti","casual lawn suit","daily wear kurti","casual printed dress","casual pret outfit"]
+"dinner" → ["dinner party outfit","formal dinner dress","elegant dinner wear","chiffon dinner suit","dinner event outfit"]`;
+
+    let parsed = await _callSuggestionsModel(prompt, modelName, apiKey);
+    if (!parsed && modelName !== AI_FALLBACK_MODEL) {
+      parsed = await _callSuggestionsModel(prompt, AI_FALLBACK_MODEL, apiKey);
+    }
+    // DeepSeek/Gemini fallback disabled for suggestions.
+    if (!parsed) return [];
+
+    const suggestions = Array.isArray(parsed.suggestions)
+      ? parsed.suggestions
+        .map(s => (s || "").toLowerCase().trim())
+        .filter(s => s.length >= 3 && s.length <= 60)
+        .slice(0, 5)
+      : [];
+
+    suggestionsCache[key] = { data: suggestions, timestamp: Date.now() };
+    return suggestions;
+  } catch (err) {
+    console.error("AI suggestions error:", err.message);
+    return [];
+  }
+}
 
 const normalizeDomain = (domain) =>
   (domain || "")
@@ -30,18 +471,78 @@ const toTime = (value) => {
 };
 
 const latestProductTime = (product = {}) =>
-  toTime(product.firstPublishedAt) ||
-  toTime(product.shopifyPublishedAt);
+  // shopifyCreatedAt: Shopify creation date — completely stable, never changes on republish/sync
+  // firstPublishedAt: fallback (set once on first DB insert)
+  toTime(product.shopifyCreatedAt) ||
+  toTime(product.firstPublishedAt);
 
-const latestCollectionTime = (collection = {}) =>
-  // firstPublishedAt is stable — does not change on republish (shopifyPublishedAt changes on every toggle)
-  toTime(collection.firstPublishedAt) ||
-  toTime(collection.shopifyCreatedAt);
+const latestCollectionTime = (collection = {}) => {
+  // Take the MORE RECENT of shopifyCreatedAt and firstPublishedAt
+  // shopifyCreatedAt: stable Shopify creation date (never changes)
+  // firstPublishedAt: first publish date ($setOnInsert, never overwritten)
+  // Neither changes on republish — both are safe signals
+  const created = toTime(collection.shopifyCreatedAt);
+  const firstPub = toTime(collection.firstPublishedAt);
+  return Math.max(created, firstPub) || created || firstPub;
+};
 
 const daysSinceTime = (time) =>
   time
     ? (Date.now() - time) / (1000 * 60 * 60 * 24)
     : 9999;
+
+// Words that are generic fashion / occasion keywords — never use as vendor signals.
+// If a query token is in this set it won't drive vendor detection via typo or token scoring.
+// Exact/contains matches on the full vendor name still work (e.g. vendor "Shadi Studio").
+const NON_VENDOR_KEYWORDS = new Set([
+  // Pakistani occasions
+  "shadi", "mehndi", "barat", "baraat", "valima", "waleema", "nikah", "mangni",
+  "engagement", "mayun", "eid", "party", "festive",
+  // Lifestyle / category
+  "casual", "formal", "office", "university", "college", "bridal", "wedding", "bride", "dulhan",
+  // Product types
+  "lawn", "suit", "suits", "kurti", "kurtis", "kameez", "lehenga", "gharara", "sharara",
+  "saree", "sari", "maxi", "gown", "kaftan", "pret", "unstitched", "stitched",
+  "dress", "dresses", "jora", "dupatta", "collection", "collections",
+  "outfit", "outfits", "clothes", "clothing", "attire", "wear", "wearing",
+  // Seasons & occasions (generic)
+  "summer", "winter", "spring", "autumn", "seasonal", "eid", "festive",
+  // Fabrics
+  "chiffon", "silk", "cotton", "organza", "velvet", "khaddar", "karandi",
+  "georgette", "net", "tissue", "jacquard",
+  // Descriptors
+  "embroidered", "embroidery", "printed", "digital", "luxury", "designer",
+  "heavy", "light", "new", "arrivals", "arrival", "sale", "discount", "latest",
+  "style", "styles", "fashion", "trendy", "elegant", "beautiful", "pretty",
+  "classic", "modern", "traditional", "ethnic", "western", "eastern",
+  // Generic filler words
+  "for", "with", "and", "the", "best", "top", "good", "nice", "similar",
+  // Colors
+  "red", "blue", "green", "black", "white", "pink", "yellow", "orange",
+  "purple", "maroon", "navy", "grey", "gray", "beige", "cream", "golden",
+]);
+
+// Collections that are internal Shopify system/app collections — never show to users
+const GARBAGE_COLLECTION_PATTERNS = [
+  /do[\s-]?not[\s-]?delete/i,
+  /smart[\s-]?products[\s-]?filter/i,
+  /bestseller[\s-]?collection/i,
+  /orderlyemails/i,
+  /most[\s-]?sales[\s-]?products/i,
+  /best[\s-]?seller[\s-]?products/i,
+  /products[\s-]?showcase/i,
+  /filter[\s-]?index/i,
+  /^all[\s-]?products$/i,
+  /^new[\s-]?arrivals$/i,
+  /^\d{4}$/,           // just a year: "2026"
+  /^[.\-_\s]+$/,       // just punctuation: ".", "-"
+];
+
+const isGarbageCollection = (title) => {
+  const t = (title || "").trim();
+  if (t.length < 3) return true;
+  return GARBAGE_COLLECTION_PATTERNS.some(p => p.test(t));
+};
 
 const recencyScore = (time, weights = {}) => {
   const daysOld = daysSinceTime(time);
@@ -74,15 +575,6 @@ router.post("/stores/add", async (req, res) => {
   }
 });
 
-// =========================
-// 🔥 VENDOR CACHE
-// =========================
-
-const vendorCache = {};
-
-const CACHE_TIME =
-  1000 * 60 * 2 // 10 min
-
 const settingsCache = {};
 const SETTINGS_CACHE_TTL = 1000 * 60; // 1 min — fast refresh when admin updates options
 
@@ -92,16 +584,106 @@ const getSearchSettings = async (shop) => {
     return cached.data;
   }
   const doc = await Settings.findOne({ shop }).lean();
-  const data = doc?.searchOptions || {};
+  const data = {
+    searchSettings: doc?.searchSettings || {},
+    searchOptions: doc?.searchOptions || {},
+    aiSettings: doc?.aiSettings || {},
+    country: doc?.country || "Pakistan"
+  };
   settingsCache[shop] = { data, timestamp: Date.now() };
   return data;
 };
 
+// =========================
+// 🔥 VENDOR CACHE
+// =========================
+
+const vendorCache = {};
+const searchCache = {};
+const SEARCH_CACHE_TTL = 1000 * 60;
+const SEARCH_CACHE_MAX = 500;
+const CACHE_TIME = 1000 * 60 * 2;
+
+// Trending routes cache — results change slowly, 3-min TTL is fine
+const trendingCache = {};
+const TRENDING_CACHE_TTL = 1000 * 60 * 3;
+
+// =========================
+// 🌤️ SEASONAL AI SUGGESTIONS
+// Pakistan seasons: Jun-Sep=summer, Dec-Feb=winter, Mar-May=spring, Oct-Nov=autumn
+// =========================
+const seasonalSuggestionsCache = {};
+const SEASONAL_CACHE_TTL = 1000 * 60 * 60 * 6; // 6 hours — season doesn't change fast
+
+function getPakistanSeason() {
+  const m = new Date().getMonth(); // 0=Jan
+  if (m >= 5 && m <= 8) return "summer";
+  if (m >= 11 || m <= 1) return "winter";
+  if (m >= 2 && m <= 4) return "spring";
+  return "autumn";
+}
+
+async function getSeasonalSuggestions(modelName = AI_FALLBACK_MODEL) {
+  const season = getPakistanSeason();
+  const year = new Date().getFullYear();
+  const cached = seasonalSuggestionsCache[season];
+  if (cached && Date.now() - cached.timestamp < SEASONAL_CACHE_TTL) {
+    return cached.data;
+  }
+
+  try {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) return [];
+
+    const ctx = {
+      summer: `hot summer ${year}. Lawn suits, cotton, light printed fabric, summer collection ${year}.`,
+      winter: `cold winter ${year}. Khaddar, velvet, warm embroidered suits, winter collection.`,
+      spring: `spring and Eid ${year} shopping. Eid outfits, new lawn launches, light formal, pret.`,
+      autumn: `autumn/pre-winter ${year}. Transitional fabrics, khaddar starting, light warm suits.`
+    }[season];
+
+    const prompt = `You are an AI for a fashion e-commerce store.
+Current season: ${season} ${year}. Context: ${ctx}
+
+Generate 6 short trending fashion search suggestions for RIGHT NOW in ${year}.
+IMPORTANT:
+- Write ALL suggestions in English only.
+- Use year ${year} if mentioning a year — NEVER use past years like 2024 or 2023.
+
+Return ONLY this JSON (no explanation):
+{"suggestions":["<s1>","<s2>","<s3>","<s4>","<s5>"]}
+
+Rules: 2-5 words each, English only, season-relevant, fashion only.`;
+
+    let parsed = await _callSuggestionsModel(prompt, modelName, apiKey, 120, 0.4);
+    if (!parsed && modelName !== AI_FALLBACK_MODEL) {
+      parsed = await _callSuggestionsModel(prompt, AI_FALLBACK_MODEL, apiKey, 120, 0.4);
+    }
+    if (!parsed) return [];
+    // Strip any stale year the AI sneaked in (anything < current year)
+    const staleYearRe = new RegExp(`\\b20(?:2[0-${String(year - 1).slice(-1)}]|[0-1]\\d)\\b`, "g");
+    const suggestions = Array.isArray(parsed.suggestions)
+      ? parsed.suggestions
+        .map(s => (s || "").toLowerCase().trim().replace(staleYearRe, String(year)))
+        .filter(s => s.length >= 3 && s.length <= 60)
+        .slice(0, 6)
+      : [];
+
+    seasonalSuggestionsCache[season] = { data: suggestions, timestamp: Date.now() };
+    return suggestions;
+  } catch (err) {
+    console.error("Seasonal suggestions error:", err.message);
+    return [];
+  }
+}
 router.get("/search", async (req, res) => {
 
   try {
 
-    let { q, shop } = req.query;
+    const __reqStart = Date.now();
+
+    let { q, shop, vendor: filterVendor, minPrice: filterMinPrice, maxPrice: filterMaxPrice, color: filterColor, tag: filterTag } = req.query;
+    console.log(`[SEARCH] hit → shop:${shop} q:${q}`);
 
     // =========================
     // 🔥 CLEAN INPUTS
@@ -138,8 +720,8 @@ router.get("/search", async (req, res) => {
           status: "ACTIVE"
         })
           .sort({
-            firstPublishedAt: -1,
-            shopifyPublishedAt: -1
+            shopifyCreatedAt: -1,
+            firstPublishedAt: -1
           })
           .limit(20)
           .lean();
@@ -157,90 +739,131 @@ router.get("/search", async (req, res) => {
 
     }
 
+    // Single-character queries are noise — skip DB entirely
+    if (q.length < 2) {
+      return res.json({ query: q, meta: {}, vendors: [], collections: [], products: [], suggestions: [] });
+    }
+
+    // 🔥 CACHE CHECK — wahi query 60s ke andar? pura kaam skip
+    const cacheKey = `${cleanStore}|${originalQuery}`;
+    const cachedSearch = searchCache[cacheKey];
+    if (cachedSearch && Date.now() - cachedSearch.timestamp < SEARCH_CACHE_TTL) {
+      return res.json(cachedSearch.data);
+    }
+
     // =========================
-    // 🔥 LOAD SEARCH OPTIONS
+    // 🔥 SETTINGS + PARALLEL DB PREFETCH
+    // Settings load first (cached — near-zero cost) so correct AI model + enabled flag is known
     // =========================
-    const searchOpts = await getSearchSettings(shop);
+    const vendorCacheHit =
+      vendorCache[shop] &&
+      Date.now() - vendorCache[shop].timestamp < CACHE_TIME;
+
+    const settingsData = await getSearchSettings(shop);
+    const searchSettings = settingsData.searchSettings || {};
+    const searchOpts = settingsData.searchOptions || {};
+    const aiSettings = settingsData.aiSettings || {};
+    const filterSettings = settingsData.filters || {};
+    const hideOutOfStock = filterSettings.hideOutOfStock === true;
+    const storedModel = aiSettings.geminiModel;
+    const aiModelName = storedModel && SAFE_EXPANSION_MODELS.has(storedModel)
+      ? storedModel
+      : AI_PRIMARY_MODEL;
+    const aiEnabled = aiSettings.geminiEnabled !== false;
+
+    // =========================
+    // 🤖 AI CALL — settings loaded, fire with correct model + only if enabled
+    // =========================
+    console.log(`[AI] Check → aiEnabled:${aiEnabled} | key:${!!process.env.GROQ_API_KEY} | model:${aiModelName} | qLen:${originalQuery.length}`);
+    if (!aiEnabled) console.warn("[AI] DISABLED — set geminiEnabled:true via PUT /api/admin/ai-settings");
+
+    const storeCtx = vendorCacheHit ? { vendors: vendorCache[shop].data } : {};
+    const aiExpansionPromise = aiEnabled && process.env.GROQ_API_KEY && originalQuery.length >= 4
+      ? getAiExpansion(originalQuery, aiModelName, storeCtx)
+      : Promise.resolve(null);
+
+    const [synonymData, boosts, rawVendors] = await Promise.all([
+      Synonym.findOne({ query: originalQuery, store: shop }),
+      Boost.find({ query: originalQuery, store: shop }),
+      vendorCacheHit
+        ? Promise.resolve(null)
+        : Product.distinct("vendor", { store: shop, status: "ACTIVE" })
+    ]);
 
     // =========================
     // 🔥 APPLY SYNONYM
     // =========================
-    const synonymData =
-      await Synonym.findOne({
-        query: originalQuery,
-        store: shop
+    const synonymsEnabled = searchSettings.synonymsEnabled !== false;
+    const synonymWords = synonymsEnabled
+      ? (synonymData?.synonyms || [])
+        .map(s => s.word?.toLowerCase().trim())
+        .filter(Boolean)
+      : [];
+
+    const finalQuery = synonymWords.length > 0 ? synonymWords[0] : originalQuery;
+    let allSearchTerms = [...new Set([originalQuery, ...synonymWords])];
+
+    // =========================
+    // 🤖 APPLY AI EXPANSION
+    // DB queries done — Groq likely already responded by now
+    // =========================
+    const aiExpansion = await aiExpansionPromise;
+
+    if (aiExpansion) {
+      if (aiExpansion.corrected && aiExpansion.corrected !== originalQuery) {
+        allSearchTerms = [aiExpansion.corrected, ...allSearchTerms];
+      }
+      if (aiExpansion.related?.length) {
+        allSearchTerms.push(...aiExpansion.related);
+      }
+      allSearchTerms = [...new Set(allSearchTerms)];
+    }
+
+    // =========================
+    // 🎨 COLOR + PRODUCT TYPE EXTRACTION
+    // Local parsers run on raw query (no AI needed — fast + reliable).
+    // AI values fill in when local parsing misses something.
+    // =========================
+    const localColors = parseColorsFromQuery(originalQuery);
+    const localMinPrice = parseMinPriceFromQuery(originalQuery);
+
+    // Prefer local detection; fall back to AI (use full colors array, not just first)
+    const effectiveColors = localColors.length
+      ? localColors
+      : (aiExpansion?.colors?.length ? aiExpansion.colors : (aiExpansion?.color ? [aiExpansion.color] : []));
+
+    // Add English color translations to allSearchTerms so Urdu color words (lal, kala)
+    // also find products tagged/titled in English
+    if (effectiveColors.length) {
+      effectiveColors.forEach(c => {
+        if (!allSearchTerms.includes(c)) allSearchTerms.push(c);
       });
+      allSearchTerms = [...new Set(allSearchTerms)];
+    }
 
-    // Extract all synonym words (schema: synonyms[].word)
-    const synonymWords = (synonymData?.synonyms || [])
-      .map(s => s.word?.toLowerCase().trim())
-      .filter(Boolean);
-
-    // finalQuery: first synonym (for display/meta) or original
-    const finalQuery = synonymWords.length > 0
-      ? synonymWords[0]
-      : originalQuery;
-
-    // allSearchTerms: original + every synonym — used for expanded DB search
-    const allSearchTerms = [...new Set([originalQuery, ...synonymWords])];
+    // Add AI-detected product type to search terms (e.g. "saree", "lehenga", "necklace")
+    if (aiExpansion?.productType) {
+      const pt = aiExpansion.productType;
+      if (!allSearchTerms.some(t => t === pt || t.includes(pt))) {
+        allSearchTerms.push(pt);
+        allSearchTerms = [...new Set(allSearchTerms)];
+      }
+    }
 
     // =========================
-    // 🔥 GET BOOSTS
+    // 🔥 BOOSTS
     // =========================
-    const boosts =
-      await Boost.find({
-        query: originalQuery,
-        store: shop
-      });
-
-    const boostedIds =
-      boosts.map(b =>
-        String(b.productId)
-      );
+    const boostedIds = boosts.map(b => String(b.productId));
 
     // =========================
-    // 🔥 GET ALL VENDORS
+    // 🔥 VENDORS
     // =========================
-
-    let uniqueVendors = [];
-
-    // CACHE EXISTS
-    if (
-
-      vendorCache[shop] &&
-
-      Date.now() -
-      vendorCache[shop].timestamp
-      < CACHE_TIME
-
-    ) {
-
-      uniqueVendors =
-        vendorCache[shop].data;
-
+    let uniqueVendors;
+    if (vendorCacheHit) {
+      uniqueVendors = vendorCache[shop].data;
     } else {
-
-      const vendorDocs =
-        await Product.distinct(
-          "vendor",
-          {
-            store: shop,
-            status: "ACTIVE"
-          }
-        );
-
-      uniqueVendors =
-        vendorDocs
-
-          .filter(Boolean)
-
-          .map(v => v.trim());
-
-      // SAVE CACHE
-      vendorCache[shop] = {
-        data: uniqueVendors,
-        timestamp: Date.now(),
-      };
+      uniqueVendors = (rawVendors || []).filter(Boolean).map(v => v.trim());
+      vendorCache[shop] = { data: uniqueVendors, timestamp: Date.now() };
     }
 
     // =========================
@@ -290,63 +913,144 @@ router.get("/search", async (req, res) => {
         }
 
         // TYPO TOLERANCE
+        // First character MUST match — prevents "shadi"→"arshad" false positives.
+        // Generic fashion/occasion keywords are skipped — they are never vendor signals.
         const queryTokens =
           normalizedQuery.split(" ");
 
         const vendorTokens =
           vendorName.split(" ");
 
-        queryTokens.forEach(qt => {
+        // Generic Keyword for Fashion
+        const GENERIC_FASHION_WORDS = new Set([
+          "formal",
+          "formals",
+          "dress",
+          "dresses",
+          "lawn",
+          "pret",
+          "luxury",
+          "bridal",
+          "bridals",
+          "eid",
+          "summer",
+          "winter",
+          "collection",
+          "collections",
+          "suit",
+          "suits",
+          "kurta",
+          "kurti",
+          "co",
+          "coord",
+          "co-ord"
+        ]);
 
+        const nonGenericQueryTokens = queryTokens.filter(
+          qt =>
+            !NON_VENDOR_KEYWORDS.has(qt) &&
+            !GENERIC_FASHION_WORDS.has(qt)
+        );
+
+        nonGenericQueryTokens.forEach(qt => {
           vendorTokens.forEach(vt => {
-
-            const sim =
-              stringSimilarity.compareTwoStrings(
-                qt,
-                vt
-              );
-
+            if (!qt || !vt || qt[0] !== vt[0]) return;
+            const sim = stringSimilarity.compareTwoStrings(qt, vt);
+            // if (sim > 0.70)
             if (sim > 0.60) {
               score += sim * 20000;
             }
-
           });
-
         });
 
-        // TOKEN MATCHES
-        normalizedQuery
-          .split(" ")
-          .forEach(token => {
+        // TOKEN MATCHES — full token must appear in vendor name
+        nonGenericQueryTokens.forEach(token => {
+          if (token.length >= 3 && vendorName.includes(token)) {
+            score += 5000;
+          }
+        });
 
-            if (
-              token.length >= 2 &&
-              vendorName.includes(token)
-            ) {
-              score += 5000;
-            }
+        // Coverage penalty: if vendor name is much longer than matched query tokens,
+        // reduce score — prevents single short word from matching long vendor names
+        if (score > 0) {
+          const matchedTokens = nonGenericQueryTokens.filter(qt =>
+            vendorTokens.some(vt =>
+              stringSimilarity.compareTwoStrings(qt, vt) > 0.75 ||
+              vendorName.includes(qt)
+            )
+          );
 
-          });
+          // Agar query ka koi token vendor se match kar gaya
+          // to vendor ko punish mat karo
+          if (matchedTokens.length === 0) {
+            score = Math.floor(score * 0.4);
+          }
+        }
 
-        return {
-          vendor: v,
-          score
-        };
-
+        return { vendor: v, score };
       })
-
       .filter(v => v.score > 0)
+      .sort((a, b) => b.score - a.score);
 
-      .sort((a, b) =>
-        b.score - a.score
+    if (vendorMatches.length && vendorMatches[0].score > 10000) {
+      detectedVendor = vendorMatches[0].vendor;
+    }
+
+    // =========================
+    // 🤖 AI BRAND HINT FALLBACK
+    // Normal vendor detection failed but AI spotted a brand name in the query
+    // (e.g. "sania maskatiya bridals" where fuzzy score didn't cross 10k threshold).
+    //
+    // GUARD: only trust the hint if at least one hint token actually appears in
+    // (or is phonetically close to) the user's raw query.  Without this check,
+    // the Llama model hallucinated brand names for generic queries like
+    // "shadi function dress" → brandHint:"amna arshad" which had zero query overlap.
+    // =========================
+    if (!detectedVendor && aiExpansion?.brandHint) {
+      const hint = aiExpansion.brandHint;
+      const hintTokens = hint.split(" ").filter(t => t.length >= 3);
+      const queryTokens = normalizedQuery.split(" ");
+
+      // At least one hint token must appear in or closely match a query token
+      const hintInQuery = hintTokens.some(ht =>
+        queryTokens.some(qt =>
+          qt.includes(ht) ||
+          ht.includes(qt) ||
+          (qt.length >= 3 && stringSimilarity.compareTwoStrings(qt, ht) > 0.65)
+        )
       );
 
-    if (
-      vendorMatches.length &&
-      vendorMatches[0].score > 10000
-    ) {
-      detectedVendor =
-        vendorMatches[0].vendor;
+      if (hintInQuery) {
+        const hintMatch = uniqueVendors
+          .map(v => ({
+            vendor: v,
+            sim: stringSimilarity.compareTwoStrings(v.toLowerCase(), hint)
+          }))
+          .filter(m => m.sim > 0.80 || (m.vendor.toLowerCase().includes(hint) && hint.length >= 5))
+          .sort((a, b) => b.sim - a.sim)[0];
+        if (hintMatch) {
+          detectedVendor = hintMatch.vendor;
+        }
+      }
+    }
+
+    // =========================
+    // 🔥 CLEAN AI CORRECTED TERM
+    // When vendor is detected, the AI may have mangled the vendor name in its corrected
+    // output (e.g. "hussain rehar" → "hussain rehars"). Strip the vendor tokens from
+    // the corrected term so only the non-vendor keywords survive in allSearchTerms.
+    // =========================
+    if (detectedVendor && aiExpansion?.corrected && aiExpansion.corrected !== originalQuery) {
+      const vendorTks = detectedVendor.toLowerCase().split(" ");
+      const correctedNonVendor = aiExpansion.corrected
+        .split(" ")
+        .filter(t => !vendorTks.some(vt => stringSimilarity.compareTwoStrings(t, vt) > 0.70))
+        .join(" ")
+        .trim();
+      // Swap the full corrupted corrected term with just the clean keyword remainder
+      allSearchTerms = allSearchTerms.filter(t => t !== aiExpansion.corrected);
+      if (correctedNonVendor) allSearchTerms.push(correctedNonVendor);
+      allSearchTerms = [...new Set(allSearchTerms)];
     }
 
     // =========================
@@ -385,28 +1089,131 @@ router.get("/search", async (req, res) => {
 
     }
 
+    // Code For Tags typo Tolerance
+    let correctedRemainingQuery = remainingQuery;
+
+    if (
+      aiExpansion?.corrected &&
+      detectedVendor
+    ) {
+
+      const vendorTokens =
+        detectedVendor
+          .toLowerCase()
+          .split(" ");
+
+      correctedRemainingQuery =
+        aiExpansion.corrected
+          .split(" ")
+          .filter(
+            t =>
+              !vendorTokens.some(
+                vt =>
+                  stringSimilarity.compareTwoStrings(
+                    t,
+                    vt
+                  ) > 0.75
+              )
+          )
+          .join(" ")
+          .trim();
+
+    }
+
     // =========================
     // 🔥 TOKENS
     // =========================
 
+    // Strip price-related noise words so "under 200k" doesn't pollute token scoring
+    const PRICE_NOISE = new Set(["under", "below", "above", "over", "than", "mein", "tak", "se", "kam", "zyada", "budget"]);
+
+    // Remaining tokens are used for category/tag matching and scoring — they should be clean of vendor words and price noise.
+    correctedRemainingQuery =
+      correctedRemainingQuery
+
+        .replace(/\bco[\s-]?ords?\b/gi, "co-ord set")
+        .replace(/\bcoords?\b/gi, "co-ord set")
+        .replace(/\bco[\s-]?ord\b/gi, "co-ord set")
+        .replace(/\bcoord\b/gi, "co-ord set");
+
     const remainingTokens =
-
-      remainingQuery
-
+      correctedRemainingQuery
         .split(" ")
-
         .filter(Boolean)
-
-        .map(t =>
-          t.toLowerCase()
+        .map(t => t.toLowerCase())
+        .filter(
+          t =>
+            !PRICE_NOISE.has(t) &&
+            !/^\d+[kK]?$/.test(t)
         );
+
+
+    const CATEGORY_ALIASES = {
+      formals: ["formal", "formals", "formal wear", "semi formal"],
+      formal: ["formal", "formals", "formal wear", "semi formal"],   // ← ADD
+
+      casuals: ["casual", "casuals", "daily wear", "everyday"],
+      casual: ["casual", "casuals", "daily wear", "everyday"],       // ← ADD
+
+      luxury: ["luxury", "luxury pret", "premium"],
+
+      "co-ord set": [
+        "co-ord set",
+        "co ord set",
+        "coord set",
+        "co-ord",
+        "co ord",
+        "coord",
+        "co-ords",
+        "co ords",
+        "coords"
+      ],  // ← ADD
+      "co-ord": ["co ord", "co-ord", "coord", "co ord set", "co-ord set", "coord set"],
+
+      "luxury pret": ["luxury pret", "luxury", "premium pret"],       // ← ADD
+
+      pret: ["pret", "ready to wear", "ready-to-wear"],
+      festive: ["festive", "eid", "party wear", "celebration"],
+    };
+
+    // =========================
+    // 🏷️ CATEGORY TAG RESOLVER
+    // "formals" → ["formal", "formals", "formal wear", "semi formal"]
+    // "luxury" + productType "unstitched" → ["luxury", "unstitched"]
+    // =========================
+    function expandCategoryToTags(tokens) {
+      const expanded = new Set();
+      tokens.forEach(t => {
+        const aliases = CATEGORY_ALIASES[t] || CATEGORY_ALIASES[t.replace(/s$/, "")] || [];
+        if (aliases.length) {
+          aliases.forEach(a => expanded.add(a));
+        } else {
+          expanded.add(t); // original token bhi rakho
+        }
+      });
+      return [...expanded];
+    }
+
+    const categoryTagTerms = expandCategoryToTags(remainingTokens);
+    const hasCategorySearch = categoryTagTerms.length > 0 && detectedVendor;
+    // Original token matching (category search ke saath bhi chahiye)
 
     // =========================
     // 🔥 SMART SEARCH CONDITIONS
     // =========================
-    let searchConditions = [];
 
-    // Build $or field conditions for a set of terms, respecting admin search options
+    // Use MongoDB $text (inverted index) when all field flags are at defaults.
+    // $text is orders of magnitude faster than $regex on large collections.
+    // Falls back to $regex only when admin has toggled per-field flags or enabled description search
+    // (description is not in the text index).
+    const canUseTextSearch =
+      searchOpts.searchInTitle !== false &&
+      searchOpts.searchInVendor !== false &&
+      searchOpts.searchInTags !== false &&
+      searchOpts.searchInCollections !== false &&
+      searchOpts.searchInDescription !== true;
+
+    // buildOrConds: fallback used only when canUseTextSearch is false
     const buildOrConds = (terms) => {
       const conds = [];
       for (const term of terms) {
@@ -429,118 +1236,203 @@ router.get("/search", async (req, res) => {
       return conds;
     };
 
+    // Strip price noise (under/above/20k/5000) from search terms before $text / regex
+    // e.g. "dress under 20k" → "dress"  |  "kurti above 3000" → "kurti"
+    const stripPriceNoise = (term) =>
+      (term || "").split(/\s+/)
+        .filter(w => !PRICE_NOISE.has(w) && !/^\d+[kK]?$/.test(w))
+        .join(" ")
+        .trim();
+
+    const cleanSearchTerms = [...new Set(
+      allSearchTerms.map(stripPriceNoise).filter(Boolean)
+    )];
+
+    // Core terms for DB query: original query + synonyms + AI productType + colors
+    // AI related terms are intentionally excluded — they go into scoring only, not fetching
+    // Using them in $text would broaden the result set and return irrelevant products
+    // Occasion → DB fetch synonyms so bridal/wedding products are included in initial pool
+    const OCCASION_DB_SYNONYMS = {
+      wedding: ['bridal', 'wedding', 'barat', 'valima', 'shadi', 'couture'],
+      mehndi: ['mehndi', 'mehendi'],
+      party: ['party', 'formal', 'evening', 'festive', 'function'],
+      festive: ['festive', 'eid', 'celebration', 'party'],
+      bridal: ['bridal', 'wedding', 'barat', 'couture', 'dulhan'],
+      formal: ['formal', 'office', 'pret'],
+      casual: ['casual', 'lawn', 'pret', 'daily'],
+      nikkah: ['bridal', 'wedding', 'formal'],
+      valima: ['bridal', 'wedding', 'formal bridal'],
+      barat: ['bridal', 'heavy', 'wedding'],
+    };
+    const occasionDbTerms = aiExpansion?.occasion
+      ? (OCCASION_DB_SYNONYMS[aiExpansion.occasion] || [])
+      : [];
+
+    const coreDbTerms = [...new Set([
+      stripPriceNoise(originalQuery),
+      ...synonymWords.map(stripPriceNoise),
+      aiExpansion?.corrected ? stripPriceNoise(aiExpansion.corrected) : null,
+      aiExpansion?.productType || null,
+      ...occasionDbTerms,
+      ...effectiveColors
+    ].filter(Boolean))];
+
+    const productQuery = { store: cleanStore, status: "ACTIVE" };
+
+    // =========================
+    // 🔽 USER FILTER PARAMS + ADMIN SETTINGS
+    // Applied on top of text/AI search — narrows results
+    // =========================
+    if (hideOutOfStock) {
+      productQuery.stock = { $gt: 0 };
+    }
+    if (filterVendor) {
+      productQuery.vendor = { $regex: escapeRegex(filterVendor.trim()), $options: "i" };
+    }
+    if (filterMinPrice || filterMaxPrice) {
+      productQuery.price = {};
+      if (filterMinPrice) productQuery.price.$gte = Number(filterMinPrice);
+      if (filterMaxPrice) productQuery.price.$lte = Number(filterMaxPrice);
+    }
+    if (filterColor) {
+      productQuery.colors = filterColor.trim().toLowerCase();
+    }
+    if (filterTag) {
+      productQuery.tags = filterTag.trim().toLowerCase();
+    }
+
     if (detectedVendor) {
-
-      // ✅ VENDOR MATCH (always — vendor detection is not affected by searchInVendor option)
-      searchConditions.push({
-        vendor: { $regex: escapeRegex(detectedVendor), $options: "i" }
-      });
-
-      // ✅ REMAINING QUERY (expanded with all synonyms)
-      if (remainingQuery) {
-        const orConds = [];
-
-        if (searchOpts.searchInTitle !== false) {
-          remainingTokens.forEach(t => {
-            orConds.push({ title: { $regex: escapeRegex(t), $options: "i" } });
-          });
-        }
-
-        // Remaining query + synonym expansions
-        [remainingQuery, ...synonymWords].forEach(term => {
-          if (!term) return;
-          const esc = escapeRegex(term);
-          if (searchOpts.searchInTags !== false) {
-            orConds.push({ searchableText: { $regex: esc, $options: "i" } });
-            orConds.push({ tags: { $regex: esc, $options: "i" } });
-          }
-          if (searchOpts.searchInCollections !== false)
-            orConds.push({ collections: { $regex: esc, $options: "i" } });
-          if (searchOpts.searchInDescription === true)
-            orConds.push({ description: { $regex: esc, $options: "i" } });
-        });
-
-        if (orConds.length) searchConditions.push({ $or: orConds });
+      if (!filterVendor) {
+        productQuery.vendor = { $regex: escapeRegex(detectedVendor), $options: "i" };
       }
 
-    } else {
+      if (remainingQuery) {
+        // Category tag terms expand karo (formals → ["formal","formals","formal wear"...])
+        const expandedTagTerms = expandCategoryToTags(remainingTokens);
+        const categoryRegex =
+          expandedTagTerms.length
+            ? expandedTagTerms.join("|")
+            : null;
 
-      // 🔥 NORMAL SEARCH — original + all synonym terms
-      const orConds = buildOrConds(allSearchTerms);
-      if (orConds.length) searchConditions.push({ $or: orConds });
+
+        const orConds = [];
+
+        // Title match
+        remainingTokens.forEach(t => {
+          orConds.push({ title: { $regex: escapeRegex(t), $options: "i" } });
+        });
+
+        // Tags match — expanded aliases se
+        if (categoryRegex) {
+
+          orConds.push({
+            tags: {
+              $regex: categoryRegex,
+              $options: "i"
+            }
+          });
+
+          orConds.push({
+            searchableText: {
+              $regex: categoryRegex,
+              $options: "i"
+            }
+          });
+
+        }
+
+        // productType match (luxury + unstitched case)
+        if (aiExpansion?.productType) {
+          orConds.push({ productType: { $regex: escapeRegex(aiExpansion.productType), $options: "i" } });
+        }
+
+        // Collections match
+        expandedTagTerms.forEach(term => {
+          orConds.push({ collections: { $regex: escapeRegex(term), $options: "i" } });
+        });
+
+        if (orConds.length) productQuery.$or = orConds;
+      }
+    } else if (canUseTextSearch) {
+      productQuery.$text = { $search: coreDbTerms.slice(0, 4).join(" ") };
+    } else {
+      // Admin has custom field flags — per-field regex fallback (core terms only)
+      const orConds = buildOrConds(coreDbTerms);
+      if (orConds.length) productQuery.$and = [{ $or: orConds }];
     }
 
     // =========================
     // 🔥 SEARCH PRODUCTS
     // =========================
 
-    let products =
-      await Product.find({
-        store: cleanStore,
-        status: "ACTIVE",
-        $and: searchConditions
-      })
-        .sort({
-          firstPublishedAt: -1,
-          shopifyPublishedAt: -1
-        })
-        .limit(300)
-        .lean()
+    const __dbStart = Date.now();
 
-        .select(`
-      title
-      handle
-      vendor
-      image
-      price
-      description
-      createdAt
-      shopifyCreatedAt
-      shopifyPublishedAt
-      firstPublishedAt
-      shopifyUpdatedAt
-      collections
-      searchableText
-      tags
-      status
-    `);
+    const selectFields = `
+      title handle vendor image price productType
+shopifyCreatedAt shopifyPublishedAt firstPublishedAt
+collections searchableText tags colors status
+      ${searchOpts.searchInDescription ? 'description' : ''}
+    `;
+
+    let products;
+    try {
+      products = await Product.find(productQuery)
+        .sort(productQuery.$text
+          ? { score: { $meta: "textScore" } }
+          : { shopifyCreatedAt: -1, firstPublishedAt: -1 })
+        .limit(100)
+        .maxTimeMS(15000)
+        .lean()
+        .select(selectFields);
+    } catch (dbErr) {
+      // Text index not ready (being built) — fall back to regex search
+      console.warn("[Search] $text failed, falling back to regex:", dbErr.message);
+      const fallbackQuery = { store: cleanStore, status: "ACTIVE" };
+      if (detectedVendor) fallbackQuery.vendor = productQuery.vendor;
+      const regexOrConds = buildOrConds(coreDbTerms.slice(0, 3));
+      if (regexOrConds.length) fallbackQuery.$or = regexOrConds;
+      products = await Product.find(fallbackQuery)
+        .sort({ shopifyCreatedAt: -1, firstPublishedAt: -1 })
+        .limit(100)
+        .lean()
+        .select(selectFields);
+    }
+
+    console.log(
+      "DB find ms:", Date.now() - __dbStart,
+      "| pre-find ms:", __dbStart - __reqStart
+    );
 
     // =========================
     // FALLBACK TYPO SEARCH
     // =========================
 
-    if (
-      products.length < 50 &&
-      detectedVendor
-    ) {
-      const fallbackProducts =
-        await Product.find({
-          store: cleanStore,
-          status: "ACTIVE",
-          vendor: {
-            $regex: escapeRegex(detectedVendor),
-            $options: "i"
-          }
-        }).sort({
-          firstPublishedAt: -1,
-          shopifyPublishedAt: -1
-        })
-          .limit(300)
-          .lean();
-      const existingIds =
-        new Set(
-          products.map(p =>
-            String(p._id)
-          )
-        );
+    if (products.length < 50 && detectedVendor) {
+      const fallbackQuery = {
+        store: cleanStore,
+        status: "ACTIVE",
+        vendor: { $regex: escapeRegex(detectedVendor), $options: "i" }
+      };
+
+      // Agar category search hai toh fallback mein bhi category filter lagao
+      if (remainingQuery && categoryTagTerms.length) {
+        const fallbackOrConds = [];
+        categoryTagTerms.forEach(term => {
+          fallbackOrConds.push({ tags: { $regex: escapeRegex(term), $options: "i" } });
+          fallbackOrConds.push({ searchableText: { $regex: escapeRegex(term), $options: "i" } });
+          fallbackOrConds.push({ title: { $regex: escapeRegex(term), $options: "i" } });
+        });
+        if (fallbackOrConds.length) fallbackQuery.$or = fallbackOrConds;
+      }
+
+      const fallbackProducts = await Product.find(fallbackQuery)
+        .sort({ firstPublishedAt: -1, shopifyCreatedAt: -1 })
+        .limit(150)
+        .lean();
+
+      const existingIds = new Set(products.map(p => String(p._id)));
       fallbackProducts.forEach(p => {
-        if (
-          !existingIds.has(
-            String(p._id)
-          )
-        ) {
-          products.push(p);
-        }
+        if (!existingIds.has(String(p._id))) products.push(p);
       });
     }
 
@@ -549,19 +1441,25 @@ router.get("/search", async (req, res) => {
     // typo tolerance for keywords (e.g. "emrodry" → embroidery)
     // sirf keyword search pe (jab koi brand detect na hua ho)
     // =========================
-    const FUZZY_THRESHOLD = 0.5; // kam karo (e.g. 0.42) to zyada tolerant — par false matches barhenge
+    const typoEnabled = searchSettings.typoEnabled !== false;
+    const typoLevel = searchSettings.typoTolerance || "medium";
+    // typoEnabled=false → threshold > 1 so fuzzy never triggers
+    const FUZZY_THRESHOLD = !typoEnabled ? 2 : typoLevel === "low" ? 0.7 : typoLevel === "high" ? 0.35 : 0.5;
 
     if (
       !detectedVendor &&
       products.length < 20 &&
-      normalizedQuery.length >= 3
+      normalizedQuery.length >= 4
     ) {
 
       // Include synonym tokens in fuzzy matching
+      // Require length >= 4 so short words like "for", "and", "the" don't cause
+      // ht.includes("for") to match any product title containing "formal", "effort" etc.
+      const FUZZY_STOP_WORDS = new Set(["for", "and", "the", "with", "that", "this", "from", "are", "was", "had", "has", "not", "but", "can", "may"]);
       const qTokens = [...new Set(
         allSearchTerms
           .flatMap(t => t.split(" "))
-          .filter(t => t.length >= 3)
+          .filter(t => t.length >= 4 && !FUZZY_STOP_WORDS.has(t) && !PRICE_NOISE.has(t))
       )];
 
       if (qTokens.length) {
@@ -570,34 +1468,34 @@ router.get("/search", async (req, res) => {
           store: cleanStore,
           status: "ACTIVE"
         })
-          .sort({
-            firstPublishedAt: -1,
-            shopifyPublishedAt: -1
-          })
-          .limit(2000)
+          .sort({ shopifyCreatedAt: -1, firstPublishedAt: -1 })
+          .limit(250)
           .lean()
+          // description excluded — it can be thousands of words (caused 57s hang).
+          // tags included — they're short words (e.g. "embroidery") that enable typo matching.
           .select(`
-            title vendor handle image price description
-            searchableText tags collections
+            title vendor productType tags handle image price
             createdAt shopifyCreatedAt shopifyPublishedAt firstPublishedAt status
           `);
 
         const existingIds = new Set(products.map(p => String(p._id)));
+        let fuzzyAdded = 0;
 
         pool.forEach(p => {
+          if (fuzzyAdded >= 50) return;
           if (existingIds.has(String(p._id))) return;
 
-          const haystack = [
-            p.searchableText || p.title || "",
-            searchOpts.searchInDescription ? (p.description || "") : ""
-          ].join(" ").toLowerCase();
-          const hTokens = haystack.split(/[\s\-|_/,.]+/).filter(Boolean);
+          // tags give typo coverage (e.g. "embrodry" → tag "embroidery" = 0.625 similarity)
+          // Limit to 25 tags so total tokens stay ~50-80 per product, not 500+
+          const tagStr = (p.tags || []).slice(0, 25).join(" ");
+          const haystack = `${p.title || ""} ${p.vendor || ""} ${tagStr}`.toLowerCase();
+          const hTokens = haystack.split(/[\s\-|_/,.]+/).filter(Boolean).slice(0, 120);
 
           let isMatch = false;
           for (const qt of qTokens) {
             for (const ht of hTokens) {
               if (
-                ht.includes(qt) ||
+                (qt.length >= 5 && ht.includes(qt)) ||
                 (
                   Math.abs(qt.length - ht.length) <= 3 &&
                   stringSimilarity.compareTwoStrings(qt, ht) >= FUZZY_THRESHOLD
@@ -610,14 +1508,146 @@ router.get("/search", async (req, res) => {
             if (isMatch) break;
           }
 
-          if (isMatch) products.push(p);
+          if (isMatch) { products.push(p); fuzzyAdded++; }
         });
+      }
+    }
+
+    // =========================
+    // 🎀 OCCASION FALLBACK
+    // Pakistani fashion products rarely have "wedding dress" in title.
+    // When occasion detected but few results, fetch products by occasion tags/collections.
+    // =========================
+    if (aiExpansion?.occasion && products.length < 30 && !detectedVendor) {
+      const oTerms = occasionDbTerms.slice(0, 5);
+      if (oTerms.length) {
+        const occOrConds = [];
+        oTerms.forEach(term => {
+          const esc = escapeRegex(term);
+          occOrConds.push({ searchableText: { $regex: esc, $options: 'i' } });
+          occOrConds.push({ tags: { $regex: esc, $options: 'i' } });
+          occOrConds.push({ collections: { $regex: esc, $options: 'i' } });
+        });
+        const existingOccIds = new Set(products.map(p => String(p._id)));
+        const occasionPool = await Product.find({ store: cleanStore, status: 'ACTIVE', $or: occOrConds })
+          .sort({ shopifyCreatedAt: -1, firstPublishedAt: -1 })
+          .limit(120)
+          .lean()
+          .select(selectFields);
+        occasionPool.forEach(p => {
+          if (!existingOccIds.has(String(p._id))) products.push(p);
+        });
+      }
+    }
+
+    // =========================
+    // 💰 PRICE FILTER
+    // Local regex parse = primary (works even if Groq times out or returns null)
+    // AI maxPrice = backup / confirmation
+    // =========================
+    const localMaxPrice = parseMaxPriceFromQuery(originalQuery);
+    const effectiveMaxPrice = localMaxPrice || aiExpansion?.maxPrice || null;
+    const effectiveMinPrice = localMinPrice || aiExpansion?.minPrice || null;
+
+    if (effectiveMaxPrice) {
+      products = products.filter(p => {
+        const price = parseFloat(p.price) || 0;
+        return price === 0 || price <= effectiveMaxPrice;
+      });
+    }
+
+    if (effectiveMinPrice) {
+      products = products.filter(p => {
+        const price = parseFloat(p.price) || 0;
+        return price === 0 || price >= effectiveMinPrice;
+      });
+    }
+
+    // =========================
+    // 🎨 HARD COLOR FILTER
+    // Only applied when enough products have structured color data.
+    // Products with no colors array are kept (fallback to text matching).
+    // =========================
+    // Skip color filter if AI says don't apply (e.g. color was hallucinated, not in query)
+    const applyColorFilter = effectiveColors.length && aiExpansion?.shouldApplyColorFilter !== false;
+    if (applyColorFilter) {
+      const productsWithColorData = products.filter(p => Array.isArray(p.colors) && p.colors.length > 0);
+      const colorDataRatio = productsWithColorData.length / Math.max(products.length, 1);
+
+      // Apply hard filter only if >= 40% of products have structured color data
+      if (colorDataRatio >= 0.4) {
+        const colorFiltered = products.filter(p => {
+          const pColors = (p.colors || []).map(c => c.toLowerCase());
+          if (!pColors.length) return true; // no color data → keep (fallback to boost)
+          return effectiveColors.some(qc =>
+            pColors.some(pc => pc === qc || pc.includes(qc) || qc.includes(pc))
+          );
+        });
+        if (colorFiltered.length >= 5) products = colorFiltered;
       }
     }
 
     // =========================
     // 🔥 FORMAT + SCORE PRODUCTS
     // =========================
+    function fuzzyFieldMatch(queryToken, text) {
+      const words = (text || "")
+        .toLowerCase()
+        .split(/[\s,|/_-]+/)
+        .filter(Boolean);
+
+      return words.some(word => {
+        if (word.includes(queryToken)) return true;
+
+        const sim =
+          stringSimilarity.compareTwoStrings(
+            queryToken,
+            word
+          );
+
+        return sim >= 0.72;
+      });
+    }
+    // =========================
+    // 🔥 COLLECTION FETCH (launched now, runs during scoring below)
+    // Vendor search → $text on Collection (uses text index, skips broken $in ID lookup)
+    // Keyword search → $in with collection IDs from product records
+    // await happens AFTER scoring — collection query is already in-flight
+    // =========================
+
+    const rawCollectionIds = detectedVendor ? [] : [
+      ...new Set(
+        products
+          .flatMap(p => Array.isArray(p.collections) ? p.collections.map(id => String(id)) : [])
+          .flatMap(id => {
+            const plain = normalizeId(id);
+            return [plain, `gid://shopify/Collection/${plain}`];
+          })
+      )
+    ];
+
+    const collectionFetchPromise = detectedVendor
+      ? Collection.find({ store: cleanStore, $text: { $search: detectedVendor } })
+        .sort({ firstPublishedAt: -1, shopifyCreatedAt: -1 })
+        .limit(20)
+        .lean()
+      : rawCollectionIds.length
+        ? Collection.find({ store: cleanStore, collectionId: { $in: rawCollectionIds } })
+          .sort({ shopifyCreatedAt: -1, firstPublishedAt: -1 })
+          .limit(50)
+          .lean()
+        : Promise.resolve([]);
+
+    // Pure vendor search: entire query matched a vendor, no remaining keyword.
+    // In this case title-based query scoring is irrelevant — every product belongs to
+    // this vendor already. Rank purely by recency + vendor match, not by whether the
+    // product title repeats the vendor name (that would unfairly penalise new products
+    // whose titles use only the collection name).
+    const isPureVendorSearch = !!(detectedVendor && !remainingQuery);
+    const isVendorOnlySearch =
+      detectedVendor &&
+      (!remainingQuery || !remainingQuery.trim());
+
     products = products.map(p => {
 
       let score = 0;
@@ -628,42 +1658,46 @@ router.get("/search", async (req, res) => {
 
       // ======================
       // TITLE TYPO TOLERANCE
+      // Skip for pure vendor search — query IS the vendor name, not a product keyword
       // ======================
 
-      const queryTokens =
-        normalizedQuery.split(" ");
+      if (!isPureVendorSearch) {
 
-      const titleTokens =
-        title.split(/[\s\-|_/]+/);
+        const queryTokens =
+          normalizedQuery.split(" ");
 
-      queryTokens.forEach(qt => {
+        const titleTokens =
+          title.split(/[\s\-|_/]+/);
 
-        titleTokens.forEach(tt => {
+        queryTokens.forEach(qt => {
 
-          const sim =
-            stringSimilarity.compareTwoStrings(
-              qt,
-              tt
-            );
+          titleTokens.forEach(tt => {
 
-          if (sim > 0.65) {
-            score += sim * 15000;
-          }
+            const sim =
+              stringSimilarity.compareTwoStrings(
+                qt,
+                tt
+              );
+
+            if (sim > 0.65) {
+              score += sim * 15000;
+            }
+
+          });
 
         });
 
-      });
+        // FULL TITLE SIMILARITY
+        const fullTitleSimilarity =
+          stringSimilarity.compareTwoStrings(
+            normalizedQuery,
+            title
+          );
 
-      // FULL TITLE SIMILARITY
+        if (fullTitleSimilarity > 0.4) {
+          score += fullTitleSimilarity * 50000;
+        }
 
-      const fullTitleSimilarity =
-        stringSimilarity.compareTwoStrings(
-          normalizedQuery,
-          title
-        );
-
-      if (fullTitleSimilarity > 0.4) {
-        score += fullTitleSimilarity * 50000;
       }
 
       const vendor =
@@ -707,27 +1741,34 @@ router.get("/search", async (req, res) => {
             .toString()
             .toLowerCase();
 
+      const productType =
+        (p.productType || "")
+          .toLowerCase();
+
+      const combinedSearchText = `
+  ${title}
+  ${searchable}
+  ${collections}
+  ${tags}
+  ${productType}
+`.toLowerCase();
       // ======================
       // EXACT QUERY
       // ======================
 
-      if (
-        title === normalizedQuery
-      ) {
-        score += 100000;
-      }
+      // Exact/contains query match — skip for pure vendor search
+      if (!isPureVendorSearch) {
 
-      // ======================
-      // TITLE CONTAINS QUERY
-      // ======================
+        if (title === normalizedQuery) {
+          score += 100000;
+        }
 
-      if (
-        title.includes(
-          normalizedQuery
-        )
-      ) {
-
-        score += 15000;
+        // ======================
+        // TITLE CONTAINS QUERY
+        // ======================
+        if (title.includes(normalizedQuery)) {
+          score += 15000;
+        }
 
       }
 
@@ -736,76 +1777,66 @@ router.get("/search", async (req, res) => {
       // ======================
 
       if (
-
         detectedVendor &&
-
-        vendor.includes(
-          detectedVendor
-            .toLowerCase()
-        )
-
+        vendor.includes(detectedVendor.toLowerCase())
       ) {
-
         score += 25000;
-
       }
 
-      // ======================
-      // TITLE HAS VENDOR
-      // ======================
-
+      // TITLE HAS VENDOR — only boost when remainingQuery exists
+      // (pure vendor search: all products are from this vendor, no extra boost needed)
       if (
-
+        !isPureVendorSearch &&
         detectedVendor &&
-
-        title.includes(
-          detectedVendor
-            .toLowerCase()
-        )
-
+        title.includes(detectedVendor.toLowerCase())
       ) {
-
         score += 12000;
+      }
 
+      function fuzzyFieldMatch(queryToken, text) {
+        const words = (text || "")
+          .toLowerCase()
+          .split(/[\s,|/_-]+/)
+          .filter(Boolean);
+
+        return words.some(word => {
+          if (word.includes(queryToken)) return true;
+
+          const sim = stringSimilarity.compareTwoStrings(
+            queryToken,
+            word
+          );
+
+          return sim >= 0.72;
+        });
       }
 
       // ======================
       // TOKEN MATCHING
       // ======================
 
-      remainingTokens.forEach(
-        token => {
+      remainingTokens.forEach(token => {
+        if (title.includes(token)) score += 12000;
 
-          if (
-            title.includes(token)
-          ) {
-            score += 12000;
-          }
-
-          if (
-            searchable.includes(
-              token
-            )
-          ) {
-            score += 7000;
-          }
-
-          if (
-            collections.includes(
-              token
-            )
-          ) {
-            score += 5000;
-          }
-
-          if (
-            tags.includes(token)
-          ) {
-            score += 4000;
-          }
-
+        if (
+          fuzzyFieldMatch(
+            token,
+            combinedSearchText
+          )
+        ) {
+          score += 18000;
         }
-      );
+      });
+
+      // Category tag aliases bhi score karo
+      if (hasCategorySearch) {
+        categoryTagTerms.forEach(term => {
+          if (tags.includes(term)) score += 30000;       // tag exact match — highest
+          if (title.includes(term)) score += 20000;
+          if (searchable.includes(term)) score += 12000;
+          if (collections.includes(term)) score += 8000;
+        });
+      }
 
       // ======================
       // RECENCY BOOST 🔥
@@ -850,15 +1881,173 @@ router.get("/search", async (req, res) => {
       }
 
       // ======================
+      // RTS PENALTY (pure vendor search)
+      // RTS products are daily restocks — suppress them unless user searched "rts"
+      // ======================
+      if (
+        isPureVendorSearch &&
+        !normalizedQuery.includes("rts") &&
+        (title.includes("(rts)") || /\brts\b/.test(title))
+      ) {
+        score -= 35000;
+      }
+
+      // ======================
       // SYNONYM MATCH BOOST
       // Products matching synonym terms get extra relevance signal
       // ======================
       synonymWords.forEach(syn => {
-        if (title.includes(syn))      score += 8000;
+        if (title.includes(syn)) score += 8000;
         if (searchable.includes(syn)) score += 4000;
-        if (tags.includes(syn))       score += 3000;
+        if (tags.includes(syn)) score += 3000;
         if (collections.includes(syn)) score += 2000;
       });
+
+      // ======================
+      // 🎨 COLOR BOOST
+      // Structured colors (from metafield/variant) are highest confidence.
+      // Text-based color detection (title/tags/searchable) is fallback.
+      // ======================
+      if (effectiveColors.length) {
+        const structuredColors = (p.colors || []).map(c => c.toLowerCase());
+        effectiveColors.forEach(color => {
+          const structuredMatch = structuredColors.some(sc =>
+            sc === color || sc.includes(color) || color.includes(sc)
+          );
+          if (structuredMatch) {
+            score += 35000; // highest — exact match from metafield/variant data
+          } else if (title.includes(color)) {
+            score += 18000;
+          } else if (tags.includes(color)) {
+            score += 10000;
+          } else if (searchable.includes(color)) {
+            score += 6000;
+          }
+        });
+      }
+
+      // ======================
+      // 🎉 OCCASION BOOST
+      // Scores all detected occasions (new schema returns array)
+      // ======================
+      if (aiExpansion?.occasions?.length || aiExpansion?.occasion) {
+        const OCC_TAGS = {
+          eid: ['eid', 'festive', 'pret', 'eid collection'],
+          mehndi: ['mehndi', 'mehendi', 'colorful', 'festive'],
+          barat: ['barat', 'bridal', 'heavy embroidery', 'baraat'],
+          valima: ['valima', 'waleema', 'formal bridal'],
+          nikkah: ['nikkah', 'nikah', 'formal', 'bridal'],
+          wedding: ['wedding', 'shadi', 'bridal', 'barat', 'valima', 'mehndi'],
+          party: ['party', 'formal', 'dinner', 'evening', 'event', 'function', 'dawat'],
+          festive: ['festive', 'party', 'eid', 'celebration', 'formal'],
+          casual: ['casual', 'daily', 'lawn', 'cotton', 'office', 'pret'],
+          formal: ['formal', 'office', 'semi-formal', 'professional'],
+          bridal: ['bridal', 'wedding', 'barat', 'dulhan', 'heavy'],
+          summer: ['summer', 'lawn', 'cotton', 'light', 'printed'],
+          winter: ['winter', 'khaddar', 'velvet', 'warm', 'heavy']
+        };
+        const allOccasions = aiExpansion.occasions?.length ? aiExpansion.occasions : (aiExpansion.occasion ? [aiExpansion.occasion] : []);
+        // Higher multiplier when AI is confident — beats recency boost for occasion queries
+        const occMult = (aiExpansion.confidence || 0) >= 80 ? 2.5 : 1;
+        allOccasions.forEach(occ => {
+          const occTerms = OCC_TAGS[occ] || [occ];
+          occTerms.forEach(term => {
+            if (title.includes(term)) score += Math.round(25000 * occMult);
+            if (tags.includes(term)) score += Math.round(18000 * occMult);
+            if (searchable.includes(term)) score += Math.round(10000 * occMult);
+          });
+        });
+      }
+
+      // ======================
+      // 📦 PRODUCT TYPE BOOST
+      // ======================
+      if (aiExpansion?.productType) {
+        const pt = aiExpansion.productType.toLowerCase();
+        const pType = (p.productType || "").toLowerCase();
+
+        if (
+          pType.includes(pt) ||
+          fuzzyFieldMatch(pt, pType)
+        ) {
+          score += 25000;
+        }
+        else if (searchable.includes(pt)) {
+          score += 6000;
+        }
+      }
+
+      // ======================
+      // 🇵🇰 PAKISTANI PRET TERMS BOOST
+      // Store-specific product vocabulary: kurta, co-ord, 3-piece, lawn suit, kaftan, tissue, pret
+      // ======================
+      const PRET_TERMS = ['kurta', 'co-ord', '3-piece', '3 piece', 'lawn suit', 'kaftan', 'tissue', 'pret', 'couture', 'shalwar', 'salwar', 'dupatta', 'kameez'];
+      PRET_TERMS.forEach(term => {
+        if (title.includes(term)) score += 4000;
+        if (searchable.includes(term)) score += 2000;
+      });
+
+      // ======================
+      // 🧵 FABRIC BOOST
+      // ======================
+      if (aiExpansion?.fabric?.length) {
+        aiExpansion.fabric.forEach(f => {
+          if (title.includes(f)) score += 10000;
+          if (tags.includes(f)) score += 7000;
+          if (searchable.includes(f)) score += 5000;
+        });
+      }
+
+      // ======================
+      // ✨ ATTRIBUTE BOOST
+      // ======================
+      if (aiExpansion?.attributes?.length) {
+        aiExpansion.attributes.forEach(attr => {
+          if (title.includes(attr)) score += 8000;
+          if (tags.includes(attr)) score += 5000;
+          if (searchable.includes(attr)) score += 3000;
+        });
+      }
+
+      // ======================
+      // 🎨 COLOR SYNONYM BOOST
+      // ======================
+      if (aiExpansion?.colorSynonyms?.length) {
+        aiExpansion.colorSynonyms.forEach(syn => {
+          if (title.includes(syn)) score += 5000;
+          if (tags.includes(syn)) score += 3000;
+          if (searchable.includes(syn)) score += 2000;
+        });
+      }
+
+      // ======================
+      // ❌ NEGATIVE KEYWORD PENALTY
+      // ======================
+      if (aiExpansion?.negativeKeywords?.length) {
+        aiExpansion.negativeKeywords.forEach(neg => {
+          if (title.includes(neg) || tags.includes(neg)) score -= 20000;
+        });
+      }
+
+      // ======================
+      // AI RELATED TERMS BOOST
+      // ======================
+      if (aiExpansion?.related?.length) {
+        aiExpansion.related.forEach(term => {
+          if (title.includes(term)) score += 18000;
+          if (searchable.includes(term)) score += 9000;
+          if (tags.includes(term)) score += 7000;
+          if (collections.includes(term)) score += 5000;
+        });
+      }
+
+      // ======================
+      // OLD PRODUCT PENALTY
+      // Penalize stale inventory — user almost never wants 2-year-old products at top
+      // ======================
+      const pDays = daysSinceTime(productTime);
+      if (pDays > 730) score -= 50000;
+      else if (pDays > 365) score -= 25000;
 
       // ======================
       // DESCRIPTION MATCH (when searchInDescription enabled)
@@ -886,56 +2075,132 @@ router.get("/search", async (req, res) => {
       };
     });
 
-    // brand + keyword: agar keyword-matched products mojood hain to sirf wahi
-    // (warna saare brand products — taake empty na rahe)
+    // brand + keyword: keep only products that match the keyword or any AI-expanded term
+    // Only filter if enough products match — avoid removing most of a brand's catalog
+    // when the remaining keyword is a generic word (e.g. "dress", "suit", "latest")
     if (detectedVendor && remainingTokens.length) {
-      const matched = products.filter(p => p.keywordHits > 0);
-      if (matched.length) products = matched;
+      const aiTerms = (aiExpansion?.related || []);
+      const matched = products.filter(p => {
+
+        const title =
+          (p.title || "").toLowerCase();
+
+        const searchable =
+          (p.searchableText || "").toLowerCase();
+
+        const tags =
+          Array.isArray(p.tags)
+            ? p.tags.join(" ").toLowerCase()
+            : (p.tags || "").toString().toLowerCase();
+
+        const collections =
+          Array.isArray(p.collections)
+            ? p.collections.join(" ").toLowerCase()
+            : (p.collections || "").toString().toLowerCase();
+
+        const productType =
+          (p.productType || "").toLowerCase();
+
+        const combinedSearchText = `
+  ${title}
+  ${searchable}
+  ${collections}
+  ${tags}
+  ${productType}
+`.toLowerCase();
+
+        let allFilterTokens = [
+          ...remainingTokens,
+          ...(aiExpansion?.related || []),
+          ...(aiExpansion?.categories || []),
+          ...(aiExpansion?.searchKeywords || [])
+        ];
+
+        allFilterTokens = [
+          ...new Set(
+            allFilterTokens.flatMap(t => [
+              t,
+              ...(CATEGORY_ALIASES[t] || []),
+              ...(CATEGORY_ALIASES[t.replace(/s$/, "")] || [])  // ← YEH ADD KAREIN
+            ])
+          )
+        ];
+
+        // Category search match — agar user ne "formals" type kiya aur product ke tags mein "formal" hai toh match
+        const categoryMatched =
+          categoryTagTerms.some(term =>
+            combinedSearchText.includes(
+              term.toLowerCase()
+            )
+          );
+
+        const matchedTokens =
+          allFilterTokens.filter(token =>
+            fuzzyFieldMatch(
+              token,
+              combinedSearchText
+            )
+          );
+
+        const productScore =
+          p.keywordHits || 0;
+
+        if (hasCategorySearch) {
+          return categoryMatched;
+        }
+
+        return (
+          matchedTokens.length > 0 ||
+          productScore > 0
+        );
+      });
+      // Only apply filter if it keeps ≥ 20% of results or at least 8 products.
+      // Below that threshold the keyword is likely too generic — let scoring do the job.
+      if (
+        matched.length >= 8 ||
+        matched.length >= products.length * 0.20
+      ) {
+        products = matched;
+      }
     }
+
+    // Pure vendor search => newest products first
 
     // =========================
     // 🔥 FINAL PRODUCT SORT
     // =========================
 
-    products.sort((a, b) => {
+    const defaultSort = searchSettings.defaultSort || "relevance";
 
-      if (
-        remainingTokens.length &&
-        b.keywordHits !== a.keywordHits
-      ) {
-        return b.keywordHits - a.keywordHits;
-      }
+    if (isPureVendorSearch) {
 
-      // relevance first
-      if (b.score !== a.score) {
-        return b.score - a.score;
-      }
+      products.sort((a, b) => {
 
-      return (
-        (b.latestTime || latestProductTime(b)) -
-        (a.latestTime || latestProductTime(a))
-      );
+        const aTime = a.latestTime || 0;
+        const bTime = b.latestTime || 0;
 
-    });
-    // =========================
-    // 🔥 COLLECTION IDS
-    // =========================
+        if (bTime !== aTime) {
+          return bTime - aTime;
+        }
 
-    const collectionIds = [
-      ...new Set(
-        products
-          .flatMap(p =>
-            Array.isArray(p.collections)
-              ? p.collections.map(id => String(id))
-              : []
-          )
-          .flatMap(id => {
-            const plain = normalizeId(id);
-            return [plain, `gid://shopify/Collection/${plain}`];   // dono format
-          })
-      )
-    ];
+        return (b.score || 0) - (a.score || 0);
 
+      });
+
+    } else if (defaultSort === "relevance") {
+      products.sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return (b.latestTime || 0) - (a.latestTime || 0);
+      });
+    } else if (defaultSort === "newest") {
+      products.sort((a, b) => (b.latestTime || 0) - (a.latestTime || 0));
+    } else if (defaultSort === "oldest") {
+      products.sort((a, b) => (a.latestTime || 0) - (b.latestTime || 0));
+    } else if (defaultSort === "price_asc") {
+      products.sort((a, b) => (parseFloat(a.price) || 0) - (parseFloat(b.price) || 0));
+    } else if (defaultSort === "price_desc") {
+      products.sort((a, b) => (parseFloat(b.price) || 0) - (parseFloat(a.price) || 0));
+    }
     // =========================
     // 🔥 SMART VENDORS
     // =========================
@@ -951,9 +2216,7 @@ router.get("/search", async (req, res) => {
 
           // FULL QUERY
           if (
-            vendorName.includes(
-              normalizedQuery
-            )
+            vendorName.includes(normalizedQuery)
           ) {
             return true;
           }
@@ -1101,60 +2364,11 @@ router.get("/search", async (req, res) => {
 
     // =========================
     // 🔥 COLLECTIONS
+    // collectionFetchPromise was launched before scoring — likely already resolved
     // =========================
-    let collections = [];
-    if (collectionIds.length) {
-
-      collections =
-        await Collection.find({
-
-          store: cleanStore,
-
-          collectionId: {
-            $in: collectionIds.map(
-              id => String(id)
-            )
-          }
-
-        })
-          .sort({
-            firstPublishedAt: -1,
-            shopifyPublishedAt: -1
-          })
-          .limit(50)
-          .lean();
-    }
-
-    // =========================
-    // VENDOR COLLECTION FALLBACK
-    // When vendor detected but collections
-    // empty (p.collections unpopulated or
-    // ID format mismatch in DB)
-    // =========================
-
-    if (collections.length === 0 && detectedVendor) {
-
-      const safeVendor = escapeRegex(detectedVendor);
-
-      collections = await Collection.find({
-
-        store: cleanStore,
-
-        $or: [
-          { vendor: { $regex: safeVendor, $options: "i" } },
-          { searchableText: { $regex: safeVendor, $options: "i" } },
-          { title: { $regex: safeVendor, $options: "i" } }
-        ]
-
-      })
-        .sort({
-          firstPublishedAt: -1,
-          shopifyPublishedAt: -1
-        })
-        .limit(20)
-        .lean();
-
-    }
+    const __colStart = Date.now();
+    let collections = await collectionFetchPromise;
+    console.log("Collection fetch ms:", Date.now() - __colStart, "| total so far:", Date.now() - __reqStart);
 
     // =========================
     // 🔥 SMART COLLECTIONS
@@ -1223,16 +2437,47 @@ router.get("/search", async (req, res) => {
 
         }
 
-        if (normalizedQuery && title === normalizedQuery) {
-          collectionScore += 90000;
-        } else if (
-          normalizedQuery &&
-          title.includes(normalizedQuery)
+        // Skip query-title matching for pure vendor search — all collections
+        // belong to this vendor already; title matching just gives the generic
+        // brand-page collection (title = vendor name exactly) an unfair +90k head start
+        if (!isPureVendorSearch) {
+          if (normalizedQuery && title === normalizedQuery) {
+            collectionScore += 90000;
+          } else if (normalizedQuery && title.includes(normalizedQuery)) {
+            collectionScore += 45000;
+          }
+        }
+
+        // Pure vendor search: the generic brand-page collection whose title IS the
+        // vendor name (e.g. "Jeevan By Hussain Rehar") is a catch-all aggregator —
+        // push it below specific product collections (Spring Summer '26, etc.)
+        if (
+          isPureVendorSearch &&
+          detectedVendor &&
+          title === detectedVendor.toLowerCase()
         ) {
-          collectionScore += 45000;
+          collectionScore -= 60000;
         }
 
         remainingTokens.forEach(token => {
+          function fuzzyFieldMatch(queryToken, text) {
+            const words = (text || "")
+              .toLowerCase()
+              .split(/[\s,|/_-]+/)
+              .filter(Boolean);
+
+            return words.some(word => {
+              if (word.includes(queryToken)) return true;
+
+              const sim =
+                stringSimilarity.compareTwoStrings(
+                  queryToken,
+                  word
+                );
+
+              return sim >= 0.72;
+            });
+          }
           if (!token) return;
           if (title.includes(token)) {
             collectionScore += 18000;
@@ -1250,21 +2495,13 @@ router.get("/search", async (req, res) => {
         // NEW COLLECTION BOOST
         // ======================
 
+        // Collection ki APNI date (shopifyCreatedAt → fallback firstPublishedAt).
+        // Product ki date yahan MIX nahi karni — warna purani collection jisme
+        // ek naya product hai wo "fresh" lagne lag jati hai.
         const collectionTime =
           latestCollectionTime(c);
 
-        const latestProductTimeValue =
-          latestProduct
-            ? latestProductTime(latestProduct)
-            : 0;
-
-        const newestRelatedTime =
-          Math.max(
-            collectionTime,
-            latestProductTimeValue
-          );
-
-        // Collection publish date is PRIMARY recency signal (shopifyPublishedAt → recently published collections rank higher)
+        // Collection ki apni recency boost
         collectionScore += recencyScore(
           collectionTime,
           {
@@ -1277,18 +2514,6 @@ router.get("/search", async (req, res) => {
           }
         );
 
-        collectionScore += recencyScore(
-          latestProductTimeValue,
-          {
-            day1: 40000,
-            day3: 30000,
-            day7: 20000,
-            day30: 10000,
-            day90: 3000,
-            day180: 500
-          }
-        );
-
         if (c.productsCount) {
           collectionScore += Math.min(
             Number(c.productsCount || 0) * 250,
@@ -1296,9 +2521,10 @@ router.get("/search", async (req, res) => {
           );
         }
 
+        // 1 saal+ purani collection demote (apni date pe, product pe nahi)
         if (
-          newestRelatedTime &&
-          daysSinceTime(newestRelatedTime) > 365
+          collectionTime &&
+          daysSinceTime(collectionTime) > 365
         ) {
           collectionScore -= 25000;
         }
@@ -1309,12 +2535,13 @@ router.get("/search", async (req, res) => {
 
           titleVendorMatch,
 
+          // latestDate / latestTime = collection ki APNI date (product se polluted nahi)
           latestDate:
-            newestRelatedTime
-              ? new Date(newestRelatedTime)
+            collectionTime
+              ? new Date(collectionTime)
               : null,
           latestTime:
-            newestRelatedTime,
+            collectionTime,
           score: collectionScore
         };
 
@@ -1333,12 +2560,6 @@ router.get("/search", async (req, res) => {
       }
     }
 
-    // Debugging: collection dates check karo
-    console.log("COLL DATES:", collections.map(c => ({
-      title: c.title,
-      created: c.shopifyCreatedAt,
-      published: c.shopifyPublishedAt
-    })));
 
     collections.sort((a, b) => {
       // brand-named collections sabse pehle
@@ -1346,12 +2567,14 @@ router.get("/search", async (req, res) => {
         return a.titleVendorMatch ? -1 : 1;
       }
 
-      if ((b.score || 0) !== (a.score || 0)) {
-        return (b.score || 0) - (a.score || 0);
-      }
-
+      // collection ki APNI date — newest collection upar
       if ((b.latestTime || 0) !== (a.latestTime || 0)) {
         return (b.latestTime || 0) - (a.latestTime || 0);
+      }
+
+      // same vintage → relevance score se tiebreak
+      if ((b.score || 0) !== (a.score || 0)) {
+        return (b.score || 0) - (a.score || 0);
       }
 
       return Number(b.productsCount || 0) - Number(a.productsCount || 0);
@@ -1374,6 +2597,15 @@ router.get("/search", async (req, res) => {
     const formattedCollections =
       collections
         .filter(c => c.title)
+        .filter(c => !isGarbageCollection(c.title))
+        .filter(c => {
+          // Hide RTS collections unless user explicitly searched for "rts"
+          if (
+            !normalizedQuery.includes("rts") &&
+            /\brts\b/i.test(c.title)
+          ) return false;
+          return true;
+        })
         .slice(0, 10)
         .map(c => ({
 
@@ -1397,10 +2629,84 @@ router.get("/search", async (req, res) => {
 
         }));
 
+    // Category-based collection filter: if collection title contains a category term, only keep it if query also contains that category (or its synonyms)
+    // Avoid showing irrelevant collections for generic queries like "summer dress" → show only collections with "summer" in title, not all dress collections
+    const availableCategories = {
+      formals: false,
+      casuals: false,
+      luxuryPret: false,
+      coordSet: false,
+      luxury: false
+    };
+
+    products.forEach(p => {
+
+      const tags = Array.isArray(p.tags)
+        ? p.tags.map(t => String(t).toLowerCase())
+        : [];
+
+      const productType =
+        (p.productType || "").toLowerCase();
+
+      const searchableText = `
+${tags.join(" ")}
+${p.searchableText || ""}
+${p.title || ""}
+${p.productType || ""}
+`.toLowerCase();
+
+      // Formals
+      if (
+        tags.some(t =>
+          t.includes("formal")
+        )
+      ) {
+        availableCategories.formals = true;
+      }
+
+      // Casuals
+      if (
+        tags.some(t =>
+          t.includes("casual")
+        )
+      ) {
+        availableCategories.casuals = true;
+      }
+
+      // Luxury Pret
+      if (
+        tags.some(t =>
+          t.includes("luxury pret")
+        )
+      ) {
+        availableCategories.luxuryPret = true;
+      }
+
+      // Co-ord Sets
+      if (
+        searchableText.includes("co-ord") ||
+        searchableText.includes("co ord") ||
+        searchableText.includes("coord")
+      ) {
+        availableCategories.coordSet = true;
+      }
+
+      // Luxury (only unstitched)
+      if (
+        productType.includes("unstitched") &&
+        tags.some(t =>
+          t.includes("luxury")
+        )
+      ) {
+        availableCategories.luxury = true;
+      }
+
+    });
+
     // =========================
     // 🔥 FINAL RESPONSE
     // =========================
-    res.json({
+    const payload = {
 
       query: q,
 
@@ -1408,10 +2714,46 @@ router.get("/search", async (req, res) => {
         originalQuery,
         finalQuery,
         synonymsApplied: synonymWords,
+        aiExpansion: aiExpansion
+          ? {
+            corrected: aiExpansion.corrected,
+            intent: aiExpansion.intent,
+            confidence: aiExpansion.confidence,
+            brands: aiExpansion.brands,
+            brandHint: aiExpansion.brandHint,
+            colors: aiExpansion.colors,
+            color: aiExpansion.color,
+            colorSynonyms: aiExpansion.colorSynonyms,
+            categories: aiExpansion.categories,
+            subCategories: aiExpansion.subCategories,
+            productType: aiExpansion.productType,
+            occasions: aiExpansion.occasions,
+            occasion: aiExpansion.occasion,
+            fabric: aiExpansion.fabric,
+            attributes: aiExpansion.attributes,
+            style: aiExpansion.style,
+            embellishment: aiExpansion.embellishment,
+            season: aiExpansion.season,
+            negativeKeywords: aiExpansion.negativeKeywords,
+            searchKeywords: aiExpansion.searchKeywords,
+            related: aiExpansion.related,
+            searchPhrase: aiExpansion.searchPhrase,
+            maxPrice: aiExpansion.maxPrice,
+            minPrice: aiExpansion.minPrice,
+            shouldApplyBrandFilter: aiExpansion.shouldApplyBrandFilter,
+            shouldApplyColorFilter: aiExpansion.shouldApplyColorFilter,
+            shouldApplyCategoryFilter: aiExpansion.shouldApplyCategoryFilter,
+            shouldApplyCollectionFilter: aiExpansion.shouldApplyCollectionFilter,
+          }
+          : null,
+        colors: effectiveColors,
+        maxPrice: effectiveMaxPrice,
+        minPrice: effectiveMinPrice,
         detectedVendor,
         remainingQuery,
         totalProducts:
-          products.length
+          products.length,
+        availableCategories
       },
       vendors:
         vendorResults,
@@ -1420,8 +2762,24 @@ router.get("/search", async (req, res) => {
       products:
         products
           .slice(0, 20),
-      suggestions: []
-    });
+      suggestions: aiSettings.suggestionsEnabled !== false
+        ? buildSuggestions(aiExpansion, originalQuery)
+        : []
+    };
+
+    // 🔥 CACHE (60s)
+    if (Object.keys(searchCache).length > SEARCH_CACHE_MAX) {
+      for (const k in searchCache) {
+        if (Date.now() - searchCache[k].timestamp > SEARCH_CACHE_TTL) {
+          delete searchCache[k];
+        }
+      }
+    }
+    searchCache[cacheKey] = { data: payload, timestamp: Date.now() };
+
+    console.log("TOTAL handler ms:", Date.now() - __reqStart);
+
+    res.json(payload);
   } catch (err) {
 
     res.status(500).json({
@@ -1453,136 +2811,54 @@ router.get("/trending-brands", async (req, res) => {
     const cleanStore = normalizeDomain(rawStore);
 
     // =========================
-    // STORES
+    // TRENDING BRANDS CACHE
     // =========================
-
-    const allStores =
-      await Store.find().lean();
-
-    const matchedStores =
-      allStores.filter(s => {
-
-        const dbDomain =
-          s.domain
-            ?.replace(/^https?:\/\//, "")
-            .replace(/\/$/, "")
-            .trim()
-            .toLowerCase();
-
-        return dbDomain === cleanStore;
-
-      });
-
-    if (!matchedStores.length) {
-
-      return res.status(404).json({
-        error: "No matching store found",
-        cleanStore
-      });
-
+    const tbCacheKey = `trending-brands|${cleanStore}`;
+    const tbCached = trendingCache[tbCacheKey];
+    if (tbCached && Date.now() - tbCached.timestamp < TRENDING_CACHE_TTL) {
+      return res.json(tbCached.data);
     }
 
     // =========================
-    // TRENDING SETTINGS (pinned brands)
+    // PARALLEL PREFETCH: stores + settings + featured + analytics
+    // (stores query is filtered now — was fetching ALL stores before)
     // =========================
 
-    const trendingSettingsDoc =
-      await TrendingSettings.findOne({ store: cleanStore }).lean();
-
-    const pinnedBrandNames =
-      new Set(
-        (trendingSettingsDoc?.pinnedBrandNames || []).map(b => b.toLowerCase())
-      );
-
-    // =========================
-    // FEATURED BRANDS
-    // =========================
-
-    const featuredBrands =
-      await FeaturedBrand.find({
-        active: true,
-        store: cleanStore
-      }).lean();
-
-    const featuredMap = {};
-
-    featuredBrands.forEach(f => {
-
-      if (!f?.title) return;
-
-      featuredMap[
-        f.title.toLowerCase()
-      ] = f;
-
-    });
-
-    // =========================
-    // ANALYTICS DATA
-    // =========================
-
-    const analyticsData =
-      await Analytics.aggregate([
-
-        {
-          $match: {
-            store: cleanStore,
-            vendor: {
-              $exists: true,
-              $ne: null
-            }
-          }
-        },
-
+    const [matchedStores, trendingSettingsDoc, featuredBrands, analyticsData] = await Promise.all([
+      Store.find({
+        domain: { $regex: new RegExp(`^(https?://)?(www\\.)?${escapeRegex(cleanStore)}/?$`, "i") }
+      }).lean(),
+      TrendingSettings.findOne({ store: cleanStore }).lean(),
+      FeaturedBrand.find({ active: true, store: cleanStore }).lean(),
+      Analytics.aggregate([
+        { $match: { store: cleanStore, vendor: { $exists: true, $ne: null } } },
         {
           $group: {
-
             _id: "$vendor",
-
-            searches: {
-              $sum: {
-                $cond: [
-                  {
-                    $eq: [
-                      "$type",
-                      "search"
-                    ]
-                  },
-                  1,
-                  0
-                ]
-              }
-            },
-
-            clicks: {
-              $sum: {
-                $cond: [
-                  {
-                    $eq: [
-                      "$type",
-                      "click"
-                    ]
-                  },
-                  1,
-                  0
-                ]
-              }
-            }
-
+            searches: { $sum: { $cond: [{ $eq: ["$type", "search"] }, 1, 0] } },
+            clicks: { $sum: { $cond: [{ $eq: ["$type", "click"] }, 1, 0] } }
           }
         }
+      ])
+    ]);
 
-      ]);
+    if (!matchedStores.length) {
+      return res.status(404).json({ error: "No matching store found", cleanStore });
+    }
+
+    const pinnedBrandNames =
+      new Set((trendingSettingsDoc?.pinnedBrandNames || []).map(b => b.toLowerCase()));
+
+    const featuredMap = {};
+    featuredBrands.forEach(f => {
+      if (!f?.title) return;
+      featuredMap[f.title.toLowerCase()] = f;
+    });
 
     const analyticsMap = {};
-
     analyticsData.forEach(a => {
-
       if (!a?._id) return;
-
-      analyticsMap[
-        a._id.toLowerCase()
-      ] = a;
-
+      analyticsMap[a._id.toLowerCase()] = a;
     });
 
     // =========================
@@ -1751,50 +3027,41 @@ router.get("/trending-brands", async (req, res) => {
       );
 
     // =========================
-    // PRODUCTS
+    // PRODUCTS — prefer local MongoDB (always up-to-date, covers all vendors)
+    // Fall back to Shopify API results only when local DB is empty
     // =========================
 
-    const products =
-      results
-        .flat()
-        .filter(p =>
+    // Build local product list from MongoDB first
+    const localDbProducts = await Product.find({ store: cleanStore, status: 'ACTIVE' })
+      .sort({ shopifyCreatedAt: -1, firstPublishedAt: -1 })
+      .limit(400)
+      .select('vendor title handle image price shopifyCreatedAt firstPublishedAt shopifyPublishedAt productId')
+      .lean();
 
-          p.status === "ACTIVE" &&
-          p.publishedAt
+    // Normalize local DB products to the same shape used below
+    const localProductsMapped = localDbProducts.map(p => ({
+      id: String(p.productId || p._id),
+      title: p.title || '',
+      handle: p.handle || '',
+      vendor: p.vendor || '',
+      status: 'ACTIVE',
+      publishedAt: p.shopifyPublishedAt || p.firstPublishedAt || p.shopifyCreatedAt || null,
+      createdAt: p.shopifyCreatedAt || p.firstPublishedAt || null,
+      image: p.image || '',
+      price: Number(p.price || 0),
+      shopifyCreatedAt: p.shopifyCreatedAt || null,
+      firstPublishedAt: p.firstPublishedAt || null,
+    }));
 
-        );
+    // Shopify API results (may be empty if API failed or token expired)
+    const apiProducts = results
+      .flat()
+      .filter(p => p.status === 'ACTIVE' && p.publishedAt);
 
-    const productIds =
-      products.map(p => p.id).filter(Boolean);
-
-    const productFreshnessDocs =
-      productIds.length
-        ? await Product.find({
-          store: cleanStore,
-          productId: { $in: productIds }
-        })
-          .select("productId firstPublishedAt shopifyCreatedAt")
-          .lean()
-        : [];
-
-    const productFreshnessMap = {};
-
-    productFreshnessDocs.forEach(p => {
-      productFreshnessMap[String(p.productId)] = p;
-    });
+    // Use local DB products as primary; supplement with API if it returned data
+    const products = localProductsMapped.length ? localProductsMapped : apiProducts;
 
     products.forEach(p => {
-      const dbProduct =
-        productFreshnessMap[String(p.id)];
-
-      p.firstPublishedAt =
-        dbProduct?.firstPublishedAt || null;
-
-      p.shopifyCreatedAt =
-        dbProduct?.shopifyCreatedAt ||
-        p.createdAt ||
-        null;
-
       // publishedAt from Shopify reflects current publish date (catches re-published products)
       p.stableTime =
         toTime(p.publishedAt) || latestProductTime(p);
@@ -2002,13 +3269,9 @@ router.get("/trending-brands", async (req, res) => {
     // RESPONSE
     // =========================
 
-    res.json({
-
-      brands,
-      products:
-        trendingProducts
-
-    });
+    const tbPayload = { brands, products: trendingProducts };
+    trendingCache[tbCacheKey] = { data: tbPayload, timestamp: Date.now() };
+    res.json(tbPayload);
 
   } catch (err) {
 
@@ -2043,45 +3306,37 @@ router.get("/trending", async (req, res) => {
     const cleanStore = normalizeDomain(rawStore);
 
     // =========================
-    // VERIFY STORE EXISTS
+    // TRENDING CACHE
     // =========================
+    const tCacheKey = `trending|${cleanStore}`;
+    const tCached = trendingCache[tCacheKey];
+    if (tCached && Date.now() - tCached.timestamp < TRENDING_CACHE_TTL) {
+      return res.json(tCached.data);
+    }
 
-    const storeExists = await Store.findOne({
-      domain: {
-        $regex: new RegExp(`^${escapeRegex(cleanStore)}$`, "i")
-      }
-    }).lean();
+    // =========================
+    // PARALLEL: verify store + load settings (independent)
+    // =========================
+    const [storeExists, trendingSettings] = await Promise.all([
+      Store.findOne({ domain: { $regex: new RegExp(`^${escapeRegex(cleanStore)}$`, "i") } }).lean(),
+      TrendingSettings.findOne({ store: cleanStore }).lean()
+    ]);
 
     if (!storeExists) {
       return res.json([]);
     }
 
-    // =========================
-    // TRENDING SETTINGS (admin control)
-    // =========================
-
-    const trendingSettings =
-      await TrendingSettings.findOne({ store: cleanStore }).lean();
-
-    const windowDays =
-      trendingSettings?.analyticsWindowDays || 7;
-
-    const maxProducts =
-      trendingSettings?.maxTrendingProducts || 12;
-
-    const pinnedProductIds =
-      new Set(trendingSettings?.pinnedProductIds || []);
+    const windowDays = trendingSettings?.analyticsWindowDays || 7;
+    const maxProducts = trendingSettings?.maxTrendingProducts || 12;
+    const pinnedProductIds = new Set(trendingSettings?.pinnedProductIds || []);
+    const excludedProductIds = new Set(trendingSettings?.excludedProductIds || []);
+    const windowStart = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
 
     // =========================
-    // TIME-WINDOWED ANALYTICS
-    // Only last N days count — this makes trending rotate automatically
+    // PARALLEL: analytics + products (independent)
     // =========================
-
-    const windowStart =
-      new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
-
-    const analyticsData =
-      await Analytics.aggregate([
+    const [analyticsData, dbProducts] = await Promise.all([
+      Analytics.aggregate([
         {
           $match: {
             store: cleanStore,
@@ -2092,37 +3347,31 @@ router.get("/trending", async (req, res) => {
         {
           $group: {
             _id: "$productId",
-            clicks: {
-              $sum: { $cond: [{ $eq: ["$type", "click"] }, 1, 0] }
-            },
-            searches: {
-              $sum: { $cond: [{ $eq: ["$type", "search"] }, 1, 0] }
-            }
+            clicks: { $sum: { $cond: [{ $eq: ["$type", "click"] }, 1, 0] } },
+            searches: { $sum: { $cond: [{ $eq: ["$type", "search"] }, 1, 0] } }
           }
         }
-      ]);
+      ]),
+      Product.find({
+        store: cleanStore,
+        status: "ACTIVE",
+        ...(excludedProductIds.size && { productId: { $nin: Array.from(excludedProductIds) } })
+      })
+        .sort({ shopifyCreatedAt: -1, firstPublishedAt: -1 })
+        .limit(500)
+        .lean()
+        .select(
+          "productId title handle vendor image price " +
+          "firstPublishedAt shopifyCreatedAt shopifyPublishedAt publishedAt status"
+        )
+    ]);
 
     const analyticsMap = {};
     analyticsData.forEach(item => {
-      analyticsMap[item._id] = item;
+      // Normalize key: strip GID prefix so "gid://shopify/Product/123" and "123" both map correctly
+      const key = String(item._id || "").replace(/^gid:\/\/shopify\/Product\//, "");
+      if (key) analyticsMap[key] = item;
     });
-
-    // =========================
-    // FETCH PRODUCTS FROM DB
-    // Much larger pool than Shopify API's 60-product limit
-    // =========================
-
-    const dbProducts = await Product.find({
-      store: cleanStore,
-      status: "ACTIVE"
-    })
-      .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1 })
-      .limit(500)
-      .lean()
-      .select(
-        "productId title handle vendor image price " +
-        "firstPublishedAt shopifyCreatedAt shopifyPublishedAt publishedAt status"
-      );
 
     // =========================
     // SCORE PRODUCTS
@@ -2195,10 +3444,7 @@ router.get("/trending", async (req, res) => {
 
     const trendingProducts = [...pinned, ...dynamic].slice(0, maxProducts);
 
-    // =========================
-    // RESPONSE
-    // =========================
-
+    trendingCache[tCacheKey] = { data: trendingProducts, timestamp: Date.now() };
     res.json(trendingProducts);
 
   } catch (err) {
@@ -2221,73 +3467,69 @@ router.get("/trending-collections", async (req, res) => {
 
     const cleanStore = normalizeDomain(rawStore);
 
-    const matchedStores = await Store.find({
-      domain: {
-        $regex: new RegExp(`^${escapeRegex(cleanStore)}$`, "i")
-      }
-    }).lean();
+    // =========================
+    // SETTING CHECK — default OFF, admin must explicitly enable
+    // =========================
+    const tcSettings = await getSearchSettings(cleanStore);
+    if (!tcSettings.aiSettings?.trendingCollectionsEnabled) {
+      return res.json({ collections: [] });
+    }
+
+    // =========================
+    // TRENDING COLLECTIONS CACHE
+    // =========================
+    const tcCacheKey = `trending-collections|${cleanStore}`;
+    const tcCached = trendingCache[tcCacheKey];
+    if (tcCached && Date.now() - tcCached.timestamp < TRENDING_CACHE_TTL) {
+      return res.json(tcCached.data);
+    }
+
+    // =========================
+    // PARALLEL: verify store + load settings (independent)
+    // =========================
+    const [matchedStores, trendingSettings] = await Promise.all([
+      Store.find({ domain: { $regex: new RegExp(`^${escapeRegex(cleanStore)}$`, "i") } }).lean(),
+      TrendingSettings.findOne({ store: cleanStore }).lean()
+    ]);
 
     if (!matchedStores.length) {
       return res.json({ collections: [] });
     }
 
+    const pinnedCollectionIds = trendingSettings?.pinnedCollectionIds || [];
+
     // =========================
-    // ADMIN PINNED COLLECTIONS
+    // PARALLEL: pinned + dynamic collections (independent)
     // =========================
-
-    const trendingSettings =
-      await TrendingSettings.findOne({ store: cleanStore }).lean();
-
-    const pinnedCollectionIds =
-      trendingSettings?.pinnedCollectionIds || [];
-
-    let pinnedCollections = [];
-
-    if (pinnedCollectionIds.length) {
-      pinnedCollections = await Collection.find({
+    const [pinnedCollections, dynamicCollections] = await Promise.all([
+      pinnedCollectionIds.length
+        ? Collection.find({
+          store: cleanStore,
+          collectionId: { $in: pinnedCollectionIds.map(String) }
+        }).lean()
+        : Promise.resolve([]),
+      Collection.find({
         store: cleanStore,
-        collectionId: { $in: pinnedCollectionIds.map(String) }
-      }).lean();
-    }
-
-    // =========================
-    // DYNAMIC: Sort by shopifyPublishedAt
-    // (most recently published collections appear first)
-    // =========================
-
-    const dynamicCollections = await Collection.find({
-      store: cleanStore,
-      ...(pinnedCollectionIds.length && {
-        collectionId: { $nin: pinnedCollectionIds.map(String) }
+        ...(pinnedCollectionIds.length && {
+          collectionId: { $nin: pinnedCollectionIds.map(String) }
+        })
       })
-    })
-      .sort({
-        firstPublishedAt: -1,
-        shopifyPublishedAt: -1
-      })
-      .limit(20)
-      .lean();
+        .sort({ shopifyCreatedAt: -1, firstPublishedAt: -1 })
+        .limit(20)
+        .lean()
+    ]);
 
     const allCollections = [...pinnedCollections, ...dynamicCollections];
 
     const formattedCollections =
       allCollections
-        .filter(c =>
-          c.handle &&
-          c.title &&
-          c.title.trim() &&
-          c.title !== "."
-        )
+        .filter(c => c.handle && c.title && c.title.trim() && c.title !== ".")
         .slice(0, 10)
-        .map(c => ({
-          title: c.title,
-          handle: c.handle,
-          image: c.image || ""
-        }));
+        .map(c => ({ title: c.title, handle: c.handle, image: c.image || "" }));
 
-    return res.json({
-      collections: formattedCollections
-    });
+    const tcPayload = { collections: formattedCollections };
+    trendingCache[tcCacheKey] = { data: tcPayload, timestamp: Date.now() };
+    return res.json(tcPayload);
 
   } catch (err) {
     console.error("TRENDING COLLECTIONS ERROR:", err);
@@ -2295,5 +3537,131 @@ router.get("/trending-collections", async (req, res) => {
   }
 });
 
+
+// =========================
+// 🤖 AI SUGGESTIONS ROUTE
+// GET /suggestions?q=shadi&shop=store.myshopify.com
+// Returns autocomplete suggestions: popular queries + vendor matches + AI completions
+// =========================
+router.get("/suggestions", async (req, res) => {
+  try {
+    let { q, shop, store } = req.query;
+
+    shop = (shop || store || "")
+      .replace(/^https?:\/\//, "")
+      .replace(/\/$/, "")
+      .trim()
+      .toLowerCase();
+
+    q = (q || "").trim();
+
+    if (!shop) return res.json({ query: q, suggestions: [] });
+
+    const settingsData = await getSearchSettings(shop);
+    const aiSettings = settingsData.aiSettings || {};
+
+    // Feature disabled by admin
+    if (aiSettings.suggestionsEnabled === false) {
+      return res.json({ query: q, suggestions: [] });
+    }
+
+    const modelName = SAFE_EXPANSION_MODELS.has(aiSettings.geminiModel)
+      ? aiSettings.geminiModel
+      : AI_FALLBACK_MODEL;
+
+    // ─────────────────────────────────────────────────────────
+    // EMPTY QUERY → homepage suggestions: manual + seasonal AI
+    // ─────────────────────────────────────────────────────────
+    if (q.length < 2) {
+      const manual = (aiSettings.manualSuggestions || [])
+        .map(s => ({ text: (s || "").toLowerCase().trim(), type: "manual" }))
+        .filter(s => s.text.length >= 2);
+
+      const seasonal = aiSettings.geminiEnabled !== false && process.env.GROQ_API_KEY
+        ? await getSeasonalSuggestions(modelName)
+        : [];
+
+      const seen = new Set(manual.map(s => s.text));
+      const seasonalMapped = seasonal
+        .filter(s => !seen.has(s))
+        .map(s => ({ text: s, type: "seasonal" }));
+
+      return res.json({ query: q, suggestions: [...manual, ...seasonalMapped].slice(0, 8) });
+    }
+
+    const normalizedQ = q.toLowerCase();
+
+    // Fire all three in parallel: AI + analytics + vendor matches
+    const [aiSuggestions, popularQueries, matchingVendors] = await Promise.all([
+      // 1. AI completions (only if AI enabled)
+      aiSettings.geminiEnabled !== false && process.env.GROQ_API_KEY
+        ? getAiSuggestions(normalizedQ, modelName)
+        : Promise.resolve([]),
+
+      // 2. Popular past queries that START WITH the typed text and returned results
+      Analytics.aggregate([
+        {
+          $match: {
+            store: shop,
+            type: "search",
+            normalizedQuery: { $regex: `^${escapeRegex(normalizedQ)}`, $options: "i" },
+            resultsCount: { $gt: 0 }
+          }
+        },
+        { $group: { _id: "$normalizedQuery", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 5 }
+      ]),
+
+      // 3. Vendor (brand) names that contain the typed text
+      Product.distinct("vendor", {
+        store: shop,
+        status: "ACTIVE",
+        vendor: { $regex: escapeRegex(normalizedQ), $options: "i" }
+      })
+    ]);
+
+    const seen = new Set();
+    const results = [];
+
+    const push = (text, type) => {
+      const t = (text || "").trim().toLowerCase();
+      if (t.length < 2 || seen.has(t)) return;
+      seen.add(t);
+      results.push({ text: t, type });
+    };
+
+    // Priority 1 — popular real queries (highest intent signal)
+    popularQueries.forEach(pq => push(pq._id, "popular"));
+
+    // Priority 2 — vendor/brand name matches
+    (matchingVendors || []).slice(0, 3).forEach(v => push(v, "vendor"));
+
+    // Priority 3 — AI completions fill the rest
+    aiSuggestions.forEach(s => push(s, "ai"));
+
+    return res.json({ query: q, suggestions: results.slice(0, 8) });
+
+  } catch (err) {
+    console.error("SUGGESTIONS ERROR:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+const _norm = (s) => (s || "").replace(/^https?:\/\//, "").replace(/\/$/, "").trim().toLowerCase();
+
+router.clearSettingsCache = (shop) => {
+  delete settingsCache[_norm(shop)];
+};
+
+router.clearTrendingCache = (shop) => {
+  const s = _norm(shop);
+  Object.keys(trendingCache).forEach(k => { if (k.includes(`|${s}`)) delete trendingCache[k]; });
+};
+
+router.clearSearchCache = (shop) => {
+  const s = _norm(shop);
+  Object.keys(searchCache).forEach(k => { if (k.startsWith(`${s}|`)) delete searchCache[k]; });
+};
 
 module.exports = router;

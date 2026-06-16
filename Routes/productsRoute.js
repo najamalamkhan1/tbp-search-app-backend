@@ -5,6 +5,118 @@ const Product = require("../Models/productModel");
 const Store = require("../Models/store")
 const Collection = require("../Models/collectionModel");
 
+// =========================
+// 🎨 COLOR EXTRACTION HELPER
+// Priority: metafields > variant color options > tags > title words
+// =========================
+const _COLOR_TAGS = new Set([
+  'black','white','red','blue','green','yellow','pink','orange','purple',
+  'maroon','navy','grey','gray','beige','cream','golden','gold','silver',
+  'nude','ivory','mint','teal','mustard','burgundy','olive','rust','coral',
+  'peach','lilac','lavender','rose','brown','tan','blush','turquoise',
+  'magenta','fuchsia','emerald','violet','caramel','charcoal','champagne',
+]);
+const _COLOR_NORM = { gray: 'grey', gold: 'golden' };
+
+function extractProductColors({ metafields = [], variantOptions = [], tags = [], title = '' }) {
+  const found = new Set();
+  const add = (v) => {
+    const c = (v || '').toLowerCase().trim().replace(/\s+/g, ' ');
+    if (c.length > 1 && c !== 'default title' && c !== 'none') {
+      found.add(_COLOR_NORM[c] || c);
+    }
+  };
+
+  // 1. Metafields (color namespaces)
+  metafields.forEach(mf => {
+    (mf.value || '').split(/[,|;\/]/).forEach(v => add(v.trim()));
+  });
+
+  // 2. Variant options named "Color" or "Colour"
+  variantOptions.forEach(opt => {
+    if (/^colou?r$/i.test(opt.name)) {
+      (opt.value || '').split(/[,\/]/).forEach(v => add(v.trim()));
+    }
+  });
+
+  // 3. Tags that are known color words
+  (tags || []).forEach(tag => {
+    const t = tag.toLowerCase().trim();
+    if (_COLOR_TAGS.has(t)) add(t);
+    if (/^off[\s-]?white$/i.test(t))  add('off-white');
+    if (/^sky[\s-]?blue$/i.test(t))   add('sky blue');
+    if (/^navy[\s-]?blue$/i.test(t))  add('navy blue');
+    if (/^rose[\s-]?gold$/i.test(t))  add('rose gold');
+    if (/^dark[\s-]?green$/i.test(t)) add('dark green');
+  });
+
+  // 4. Color words in the product title
+  const tl = (title || '').toLowerCase();
+  tl.split(/[\s\-|_\/,\(\)]+/).forEach(w => { if (_COLOR_TAGS.has(w)) add(w); });
+  if (/off[\s-]?white/i.test(tl))  add('off-white');
+  if (/sky[\s-]?blue/i.test(tl))   add('sky blue');
+  if (/navy[\s-]?blue/i.test(tl))  add('navy blue');
+  if (/rose[\s-]?gold/i.test(tl))  add('rose gold');
+  if (/dark[\s-]?green/i.test(tl)) add('dark green');
+  if (/dark[\s-]?blue/i.test(tl))  add('dark blue');
+
+  return [...found];
+}
+
+// =========================
+// 🔬 VISION AI COLOR DETECTION
+// =========================
+const VISION_COLOR_LIST = 'black, white, red, blue, green, yellow, pink, orange, purple, maroon, navy, grey, beige, cream, golden, silver, nude, ivory, mint, teal, mustard, burgundy, olive, rust, coral, peach, lilac, lavender, rose, brown, tan, blush, turquoise, magenta, fuchsia, emerald, violet, caramel, charcoal, champagne';
+const VISION_COLOR_NORM = { gray: 'grey', gold: 'golden', 'off-white': 'ivory', 'off white': 'ivory', 'dark green': 'emerald', 'light pink': 'peach' };
+const VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
+const VISION_PROMPT_TEXT = `Look at this fashion garment. Identify the 1-3 MAIN colors of the garment fabric only (ignore background, ignore pattern names like "floral" or "printed").
+
+You MUST choose colors ONLY from this exact list:
+${VISION_COLOR_LIST}
+
+Rules:
+- Return ONLY a JSON array, nothing else
+- Max 3 colors, most dominant first
+- No color words outside the list above
+- Examples: ["black"] or ["white","golden"] or ["navy","cream","golden"]`;
+
+async function _detectColorsVision(imageUrl, apiKey) {
+  try {
+    const res = await Promise.race([
+      fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: 'POST',
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: VISION_MODEL,
+          messages: [{ role: "user", content: [
+            { type: "text", text: VISION_PROMPT_TEXT },
+            { type: "image_url", image_url: { url: imageUrl } }
+          ]}],
+          max_tokens: 80,
+          temperature: 0
+        })
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Vision timeout")), 15000))
+    ]);
+    if (res.status === 429) { console.warn("[Vision Sync] Rate limited"); return []; }
+    if (!res.ok) { console.warn(`[Vision Sync] HTTP ${res.status}`); return []; }
+    const data = await res.json();
+    const text = (data?.choices?.[0]?.message?.content || '').trim();
+    const match = text.match(/\[[\s\S]*?\]/);
+    if (!match) return [];
+    return JSON.parse(match[0])
+      .map(c => { const l = (c || '').toLowerCase().trim(); return VISION_COLOR_NORM[l] || l; })
+      .filter(c => _COLOR_TAGS.has(c))
+      .slice(0, 3);
+  } catch (e) {
+    console.warn('[Vision Sync] Error:', e.message);
+    return [];
+  }
+}
+
 // 🔄 SYNC PRODUCTS (Fetch version)
 router.post("/sync-products", async (req, res) => {
 
@@ -42,11 +154,17 @@ router.post("/sync-products", async (req, res) => {
       });
     }
 
-    res.status(202).json({
-      success: true,
-      message: "Product sync started. Check server logs for progress.",
-      shop
-    });
+    // SSE headers — stream progress to frontend
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
+
+    const sendEvent = (data) => {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    sendEvent({ type: "started", shop });
 
     let hasNextPage = true;
 
@@ -96,10 +214,24 @@ query getProducts($cursor: String) {
           url
         }
 
-        variants(first: 1) {
+        metafields(first: 250) {
+          edges {
+            node {
+              value
+              key
+              namespace
+            }
+          }
+        }
+
+        variants(first: 10) {
           edges {
             node {
               price
+              selectedOptions {
+                name
+                value
+              }
             }
           }
         }
@@ -148,9 +280,6 @@ query getProducts($cursor: String) {
 
         retryCount++;
 
-        console.log(
-          `SHOPIFY RATE LIMITED... RETRY ${retryCount}`
-        );
 
         if (retryCount >= 5) {
 
@@ -177,10 +306,7 @@ query getProducts($cursor: String) {
         const errorText =
           await response.text();
 
-        console.log(
-          "SHOPIFY PRODUCT API ERROR:",
-          errorText
-        );
+        console.error("SHOPIFY PRODUCT API ERROR:", errorText);
 
         throw new Error(
           `Shopify API Failed: ${response.status}`
@@ -221,6 +347,8 @@ query getProducts($cursor: String) {
 
       const products =
         data?.data?.products?.edges || [];
+
+      const noColorItems = []; // products needing vision AI color detection
 
       if (
         products.length === 0
@@ -272,6 +400,23 @@ query getProducts($cursor: String) {
               p.variants?.edges?.[0]
                 ?.node?.price || 0
             );
+
+          // COLORS — from metafields + variant options
+          const allVariantOptions = (p.variants?.edges || []).flatMap(e =>
+            (e?.node?.selectedOptions || [])
+          );
+          const metafields = (p.metafields?.edges || []).map(e => e.node).filter(Boolean);
+          const productColors = extractProductColors({
+            metafields,
+            variantOptions: allVariantOptions,
+            tags: Array.isArray(p.tags) ? p.tags : [],
+            title: p.title || ''
+          });
+
+          // Track for vision AI (no colors found + has image)
+          if (productColors.length === 0 && p.featuredImage?.url) {
+            noColorItems.push({ productId: String(p.id), imageUrl: p.featuredImage.url });
+          }
 
           // SEARCHABLE TEXT
           const searchableText = [
@@ -378,7 +523,9 @@ query getProducts($cursor: String) {
                     p.updatedAt
                       ? new Date(p.updatedAt)
                       : null,
-                  searchableText
+                  searchableText,
+
+                  colors: productColors,
                 },
                 // 🔑 sirf pehli dafa (insert) set hoga, re-publish pe kabhi nahi
                 $setOnInsert: {
@@ -407,9 +554,29 @@ query getProducts($cursor: String) {
         totalSynced +=
           operations.length;
 
-        console.log(
-          `PRODUCTS SYNCED: ${totalSynced}`
-        );
+        sendEvent({ type: "progress", synced: totalSynced });
+      }
+
+      // =========================
+      // 🎨 VISION AI COLOR DETECTION
+      // Run after bulkWrite for products with no colors found locally
+      // =========================
+      const visionApiKey = process.env.GROQ_API_KEY;
+      if (noColorItems.length > 0 && visionApiKey) {
+        const cleanShop = shop.trim().toLowerCase();
+        let visionUpdated = 0;
+        for (const item of noColorItems) {
+          const colors = await _detectColorsVision(item.imageUrl, visionApiKey);
+          if (colors.length > 0) {
+            await Product.updateOne(
+              { store: cleanShop, productId: item.productId },
+              { $set: { colors } }
+            );
+            visionUpdated++;
+          }
+          // Slow down vision calls to stay friendlier with Groq rate limits.
+          await new Promise(r => setTimeout(r, 2000));
+        }
       }
 
       // =========================
@@ -434,9 +601,6 @@ query getProducts($cursor: String) {
       if (
         nextCursor === previousCursor
       ) {
-        console.log(
-          "DUPLICATE CURSOR STOPPED"
-        );
         break;
       }
       previousCursor =
@@ -476,27 +640,15 @@ query getProducts($cursor: String) {
     // =========================
     // ✅ DONE
     // =========================
-    if (!res.headersSent) {
-      res.json({
-        success: true,
-        totalSynced
-      });
-    } else {
-      console.log(
-        `PRODUCT SYNC COMPLETED: ${totalSynced}`
-      );
-    }
+    sendEvent({ type: "done", total: totalSynced });
+    res.end();
   } catch (err) {
     console.error(err);
     if (!res.headersSent) {
-      res.status(500).json({
-        error: err.message
-      });
+      res.status(500).json({ error: err.message });
     } else {
-      console.log(
-        "BACKGROUND PRODUCT SYNC FAILED:",
-        err.message
-      );
+      res.write(`data: ${JSON.stringify({ type: "error", message: err.message })}\n\n`);
+      res.end();
     }
   }
 });
@@ -534,6 +686,18 @@ router.post("/sync-collections", async (req, res) => {
           "Store session not found"
       });
     }
+
+    // SSE headers — stream progress to frontend
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
+
+    const sendColEvent = (data) => {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    sendColEvent({ type: "started", shop: normalizedShop });
 
     // ======================================
     // 🔥 STORE ALL IDS
@@ -611,9 +775,6 @@ router.post("/sync-collections", async (req, res) => {
 
             retryCount++;
 
-            console.log(
-              `COLLECTION RATE LIMITED... RETRY ${retryCount}`
-            );
 
             if (retryCount >= 5) {
 
@@ -642,10 +803,7 @@ router.post("/sync-collections", async (req, res) => {
             const errorText =
               await response.text();
 
-            console.log(
-              "COLLECTION API ERROR:",
-              errorText
-            );
+            console.error("COLLECTION API ERROR:", errorText);
 
             throw new Error(
               `Collections API Failed: ${response.status}`
@@ -852,16 +1010,15 @@ router.post("/sync-collections", async (req, res) => {
             collectionSyncCounts[type] +=
               bulkOps.length;
 
-            console.log(
-              `${type.toUpperCase()} SYNCED: ${collectionSyncCounts[type]}`
-            );
+            sendColEvent({
+              type: "progress",
+              collectionType: type,
+              synced: collectionSyncCounts[type],
+              total: collectionSyncCounts.custom_collections + collectionSyncCounts.smart_collections
+            });
 
           }
 
-          console.log(
-            `${type} synced:`,
-            bulkOps.length
-          );
 
           // ==============================
           // 🔥 NEXT PAGE
@@ -903,21 +1060,233 @@ router.post("/sync-collections", async (req, res) => {
     }
 
     // ======================================
-    // 🔥 RESPONSE
+    // ✅ DONE
     // ======================================
-    res.json({
-      success: true,
-      synced:
-        totalCollections
+    sendColEvent({
+      type: "done",
+      total: totalCollections,
+      custom: collectionSyncCounts.custom_collections,
+      smart: collectionSyncCounts.smart_collections
     });
+    res.end();
   } catch (err) {
     console.error(err);
-    res.status(500).json({
-      error: err.message
-    });
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message });
+    } else {
+      res.write(`data: ${JSON.stringify({ type: "error", message: err.message })}\n\n`);
+      res.end();
+    }
   }
 }
 );
+
+// ==========================================
+// 🎨 BACKFILL PRODUCT COLORS (Vision AI)
+// Processes products without colors using Groq vision model.
+// POST /api/backfill-product-colors
+// body: { shop, limit: 50 }
+// ==========================================
+
+// GET /api/backfill-colors-count?shop=xxx  — how many products still need colors
+router.get("/backfill-colors-count", async (req, res) => {
+  try {
+    let { shop } = req.query;
+    if (!shop) return res.status(400).json({ error: "Shop required" });
+    shop = shop.replace(/^https?:\/\//, "").replace(/\/$/, "").trim().toLowerCase();
+
+    const [total, noColors, withImage] = await Promise.all([
+      Product.countDocuments({ store: shop, status: "ACTIVE" }),
+      Product.countDocuments({ store: shop, status: "ACTIVE", $or: [{ colors: { $size: 0 } }, { colors: { $exists: false } }] }),
+      Product.countDocuments({ store: shop, status: "ACTIVE", image: { $exists: true, $ne: "" }, $or: [{ colors: { $size: 0 } }, { colors: { $exists: false } }] })
+    ]);
+
+    res.json({ total, noColors, needsVision: withImage, hasColors: total - noColors });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post("/backfill-product-colors", async (req, res) => {
+  try {
+    let { shop, limit = 100, offset = 0, visionOnly = false } = req.body;
+    if (!shop) return res.status(400).json({ error: "Shop required" });
+
+    shop = shop.replace(/^https?:\/\//, "").replace(/\/$/, "").trim().toLowerCase();
+    limit  = Math.min(Number(limit)  || 100, 500); // cap at 500 per batch
+    offset = Number(offset) || 0;
+
+    // ── PHASE 1: local extraction (no API) ──────────────────────────────
+    // Fill colors from tags + title — free, fast, no rate limits
+    if (!visionOnly) {
+      const localProducts = await Product.find({
+        store: shop,
+        status: "ACTIVE",
+        $or: [{ colors: { $size: 0 } }, { colors: { $exists: false } }]
+      })
+        .select("_id title tags")
+        .skip(offset)
+        .limit(limit)
+        .lean();
+
+      const localOps = [];
+      let localUpdated = 0;
+
+      for (const product of localProducts) {
+        const colors = extractProductColors({
+          metafields: [],
+          variantOptions: [],
+          tags: product.tags || [],
+          title: product.title || ''
+        });
+        if (colors.length) {
+          localOps.push({
+            updateOne: { filter: { _id: product._id }, update: { $set: { colors } } }
+          });
+          localUpdated++;
+        }
+      }
+
+      if (localOps.length) {
+        await Product.bulkWrite(localOps, { ordered: false });
+      }
+
+      // Count still empty after local pass
+      const stillEmpty = await Product.countDocuments({
+        store: shop,
+        status: "ACTIVE",
+        $or: [{ colors: { $size: 0 } }, { colors: { $exists: false } }]
+      });
+
+      res.json({
+        phase: "local",
+        processed: localProducts.length,
+        localUpdated,
+        stillNeedVision: stillEmpty,
+        message: `Local done. ${localUpdated} filled from tags/title. ${stillEmpty} still need vision API.`
+      });
+      return;
+    }
+
+    // ── PHASE 2: vision API (only products with no colors + has image) ───
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) return res.status(400).json({ error: "GROQ_API_KEY not set" });
+
+    const products = await Product.find({
+      store: shop,
+      status: "ACTIVE",
+      image: { $exists: true, $ne: "" },
+      $or: [{ colors: { $size: 0 } }, { colors: { $exists: false } }]
+    })
+      .select("_id productId title image")
+      .skip(offset)
+      .limit(limit)
+      .lean();
+
+    res.json({
+      phase: "vision",
+      processing: products.length,
+      offset,
+      nextOffset: offset + products.length,
+      message: `Vision processing ${products.length} products in background. offset=${offset}`
+    });
+
+    // Background processing
+    let updated = 0;
+    let failed  = 0;
+    let rateLimitHits = 0;
+    // Groq vision is slower; keep a conservative cooldown between products.
+    let globalCooldown = 5000;
+
+    for (const product of products) {
+      try {
+        let retries = 0;
+        let success = false;
+
+        while (retries < 3 && !success) {
+          try {
+            const visionRes = await Promise.race([
+              fetch("https://api.groq.com/openai/v1/chat/completions", {
+                method: 'POST',
+                headers: {
+                  "Authorization": `Bearer ${apiKey}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  model: VISION_MODEL,
+                  messages: [{ role: "user", content: [
+                    { type: "text", text: VISION_PROMPT_TEXT },
+                    { type: "image_url", image_url: { url: product.image } }
+                  ]}],
+                  max_tokens: 80,
+                  temperature: 0
+                })
+              }),
+              new Promise((_, reject) => setTimeout(() => reject(new Error("Vision timeout")), 15000))
+            ]);
+
+            // Rate limit — exponential backoff, bump cooldown
+            if (visionRes.status === 429) {
+              rateLimitHits++;
+              const waitMs = [15000, 30000, 60000][retries] || 60000;
+              globalCooldown = Math.min(globalCooldown + 2000, 12000);
+              console.log(`VISION RATE LIMIT hit ${rateLimitHits}, waiting ${waitMs/1000}s...`);
+              await new Promise(r => setTimeout(r, waitMs));
+              retries++;
+              if (retries >= 3) { failed++; success = true; }
+              continue;
+            }
+
+            // Reset cooldown on success
+            globalCooldown = Math.max(globalCooldown - 500, 5000);
+
+            if (!visionRes.ok) {
+              const errText = await visionRes.text();
+              console.warn(`[Vision] HTTP ${visionRes.status} for ${product.productId}:`, errText.slice(0, 200));
+              failed++; success = true; continue;
+            }
+
+            const visionData = await visionRes.json();
+            const visionText = (visionData?.choices?.[0]?.message?.content || '').trim();
+            console.log(`[Vision] ${product.productId} → "${visionText.slice(0, 80)}"`);
+            const arrMatch = visionText.match(/\[[\s\S]*?\]/);
+            if (!arrMatch) { failed++; success = true; continue; }
+
+            const detectedColors = JSON.parse(arrMatch[0])
+              .map(c => { const l = (c || '').toLowerCase().trim(); return VISION_COLOR_NORM[l] || l; })
+              .filter(c => _COLOR_TAGS.has(c))
+              .slice(0, 3);
+
+            if (detectedColors.length) {
+              await Product.updateOne({ _id: product._id }, { $set: { colors: detectedColors } });
+              updated++;
+            } else {
+              failed++;
+            }
+            success = true;
+
+          } catch (innerErr) {
+            retries++;
+            if (retries >= 3) { failed++; success = true; }
+          }
+        }
+
+        // Dynamic delay — starts 5s (12 RPM), bumps up when rate limited
+        await new Promise(r => setTimeout(r, globalCooldown));
+
+      } catch (err) {
+        console.error("Vision color error:", product.productId, err.message);
+        failed++;
+      }
+    }
+
+    console.log(`VISION BACKFILL DONE: updated=${updated} failed=${failed} rateLimitHits=${rateLimitHits} store=${shop} offset=${offset}`);
+
+  } catch (err) {
+    console.error("BACKFILL COLORS ERROR:", err);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  }
+});
 
 // ⚠️ TEMPORARY — ek dafa chala kar HATA dena
 router.get("/backfill-collection-first-published", async (req, res) => {

@@ -138,6 +138,14 @@ const productSchema =
     },
 
     // =========================
+    // 🎨 COLORS (from metafields, variant options, or vision AI)
+    // =========================
+    colors: {
+      type: [String],
+      default: []
+    },
+
+    // =========================
     // 🔥 VARIANT TITLES (for variant search — populate on product sync)
     // =========================
     variantTitles: {
@@ -170,6 +178,7 @@ productSchema.pre("save", function (next) {
   ${(this.tags || []).join(" ")}
   ${(this.collections || []).join(" ")}
   ${(this.variantTitles || []).join(" ")}
+  ${(this.colors || []).join(" ")}
 `.toLowerCase();
 
   next();
@@ -189,9 +198,12 @@ productSchema.index({
 
 // ========================================
 // 🔥 TEXT SEARCH INDEX
+// store+status prefix → MongoDB filters within the store before text scoring
 // ========================================
 productSchema.index(
   {
+    store: 1,
+    status: 1,
     title: "text",
     vendor: "text",
     searchableText: "text"
@@ -201,7 +213,8 @@ productSchema.index(
       title: 10,
       vendor: 7,
       searchableText: 3
-    }
+    },
+    name: "store_status_text_search"
   }
 );
 
@@ -220,6 +233,13 @@ productSchema.index({
   store: 1,
   status: 1,
   shopifyPublishedAt: -1
+});
+
+productSchema.index({
+  store: 1,
+  status: 1,
+  firstPublishedAt: -1,
+  shopifyCreatedAt: -1
 });
 
 // ========================================
@@ -244,6 +264,8 @@ productSchema.index({
   publishedAt: -1
 });
 
+
+
 // ========================================
 // 🔥 HANDLE INDEX
 // ========================================
@@ -267,6 +289,18 @@ productSchema.index({
 productSchema.index({
   store: 1,
   collections: 1
+});
+
+// ========================================
+// 🔥 VENDOR SEARCH INDEX
+// Covers: vendor-only queries, vendor+date sort
+// ========================================
+
+productSchema.index({
+  store: 1,
+  status: 1,
+  vendor: 1,
+  shopifyCreatedAt: -1
 });
 
 // ========================================

@@ -1,6 +1,7 @@
 const mongoose = require('mongoose')
 const SettingsSchema = new mongoose.Schema({
-  shop: { type: String, required: true, unique: true },
+  shop:    { type: String, required: true, unique: true },
+  country: { type: String, default: "Pakistan" },
 
   searchSettings: {
     type: {
@@ -14,6 +15,13 @@ const SettingsSchema = new mongoose.Schema({
       enum: ["low", "medium", "high"],
       default: "medium"
     },
+    typoEnabled: { type: Boolean, default: true },
+    defaultSort: {
+      type: String,
+      enum: ["relevance", "newest", "oldest", "price_asc", "price_desc"],
+      default: "relevance"
+    },
+    synonymsEnabled: { type: Boolean, default: true },
     delay: { type: Number, default: 300 },
     maxResults: { type: Number, default: 20 }
   },
@@ -41,6 +49,14 @@ const SettingsSchema = new mongoose.Schema({
     searchInVendor:      { type: Boolean, default: true  },
     searchInVariants:    { type: Boolean, default: false },
     searchInCollections: { type: Boolean, default: true  }
+  },
+
+  aiSettings: {
+    geminiEnabled:              { type: Boolean, default: true },
+    geminiModel:                { type: String,  default: "llama-3.3-70b-versatile" },
+    trendingCollectionsEnabled: { type: Boolean, default: false },
+    suggestionsEnabled:         { type: Boolean, default: true },
+    manualSuggestions:          [{ type: String }]
   },
 
   billing: {

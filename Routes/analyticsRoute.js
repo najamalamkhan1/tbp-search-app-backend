@@ -3,6 +3,14 @@ const router = express.Router();
 const Analytics = require("../Models/analyticsModel");
 const stringSimilarity = require("string-similarity");
 const Synonym = require("../Models/synonymModel");
+const SynonymSuggestion = require("../Models/synonymSuggestionModel");
+
+// Strip Shopify GID prefix so productId is always numeric string
+// e.g. "gid://shopify/Product/8888" → "8888"
+const normalizeProductId = (id) =>
+  id ? String(id).replace(/^gid:\/\/shopify\/Product\//, "").trim() : null;
+
+const SUGGESTION_THRESHOLD = 10; // queries needed before showing in admin
 
 router.post("/analytics", async (req, res) => {
 
@@ -108,7 +116,7 @@ router.post("/analytics", async (req, res) => {
           ?.trim()
           ?.toLowerCase() || "",
 
-      productId,
+      productId: normalizeProductId(productId),
 
       productTitle:
         productTitle || null,
@@ -250,6 +258,21 @@ router.post("/analytics", async (req, res) => {
         }
       }
 
+    }
+
+    // =====================================
+    // 🔥 SYNONYM SUGGESTION TRACKING
+    // Track popular search queries — surface to admin when count >= threshold
+    // Only track search events with a real query (skip clicks/no_result)
+    // Skip very short or very long queries
+    // =====================================
+    if (type === "search" && normalizedQuery && normalizedQuery.length >= 3 && normalizedQuery.length <= 60) {
+      // Fire-and-forget — don't block the response
+      SynonymSuggestion.findOneAndUpdate(
+        { store: normalizedStore, query: normalizedQuery },
+        { $inc: { count: 1 }, $setOnInsert: { status: "pending" } },
+        { upsert: true, new: true }
+      ).catch(e => console.warn("[Synonyms] suggestion upsert error:", e.message));
     }
 
     res.json({
@@ -1457,5 +1480,34 @@ router.get("/analytics/recommendation", async (req, res) => {
   }
 }
 );
+
+// =========================
+// 🔧 ONE-TIME MIGRATION: Normalize GID productIds
+// POST /api/analytics/migrate-product-ids
+// Strips "gid://shopify/Product/" prefix from all existing analytics records
+// Run once, safe to re-run (already-normalized records are untouched)
+// =========================
+router.post("/analytics/migrate-product-ids", async (req, res) => {
+  try {
+    const gidDocs = await Analytics.find(
+      { productId: { $regex: /^gid:\/\/shopify\/Product\// } },
+      { _id: 1, productId: 1 }
+    ).lean();
+
+    if (!gidDocs.length) return res.json({ success: true, updated: 0 });
+
+    const ops = gidDocs.map(doc => ({
+      updateOne: {
+        filter: { _id: doc._id },
+        update: { $set: { productId: doc.productId.replace("gid://shopify/Product/", "") } }
+      }
+    }));
+
+    const result = await Analytics.bulkWrite(ops);
+    res.json({ success: true, updated: result.modifiedCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 module.exports = router;

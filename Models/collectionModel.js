@@ -118,6 +118,13 @@ collectionSchema.index({
     firstPublishedAt: -1
 });
 
+// Compound index for trending-collections sort (store + date)
+collectionSchema.index({
+    store: 1,
+    shopifyCreatedAt: -1,
+    firstPublishedAt: -1
+});
+
 collectionSchema.index({
     store: 1,
     shopifyPublishedAt: -1

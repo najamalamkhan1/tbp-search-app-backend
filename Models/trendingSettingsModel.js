@@ -41,6 +41,12 @@ const trendingSettingsSchema = new mongoose.Schema(
       default: 12,
       min: 4,
       max: 50
+    },
+
+    // Admin-excluded product IDs — these never appear in trending regardless of score
+    excludedProductIds: {
+      type: [String],
+      default: []
     }
   },
   { timestamps: true }

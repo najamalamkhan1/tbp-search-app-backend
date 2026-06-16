@@ -158,6 +158,12 @@ analyticsSchema.index({
   createdAt: -1
 });
 
+// Covers trending-brands vendor aggregation: $match { store, vendor $exists }
+analyticsSchema.index({
+  store: 1,
+  vendor: 1
+});
+
 module.exports =
   mongoose.model(
     "Analytics",

@@ -6,6 +6,7 @@ const TrendingSettings = require("../Models/trendingSettingsModel");
 const Synonym = require("../Models/synonymModel");
 const Analytics = require("../Models/analyticsModel");
 const fetch = require("node-fetch");
+const searchRoute = require('./search');
 
 const normalizeStoreDomain = (shop) =>
   (shop || "")
@@ -35,8 +36,29 @@ router.put('/settings', async (req, res) => {
         { new: true, upsert: true }
     );
 
+    searchRoute.clearSettingsCache(shop);
+    searchRoute.clearSearchCache(shop);
     res.json(settings);
 })
+
+// PUT /api/settings/country
+// body: { shop, country }
+router.put('/settings/country', async (req, res) => {
+  try {
+    const { shop, country } = req.body;
+    if (!shop || !country) return res.status(400).json({ error: "Shop and country required" });
+
+    const settings = await Settings.findOneAndUpdate(
+      { shop },
+      { $set: { country: country.trim() } },
+      { new: true, upsert: true }
+    );
+    searchRoute.clearSettingsCache(shop);
+    res.json({ country: settings.country });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 router.put('/settings/filters/order', async (req, res) => {
     const { shop, active } = req.body;
@@ -117,6 +139,7 @@ router.post("/admin/trending/pin-product", async (req, res) => {
       { $addToSet: { pinnedProductIds: String(productId) } },
       { new: true, upsert: true }
     );
+    searchRoute.clearTrendingCache(store);
     res.json(settings);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -136,6 +159,7 @@ router.delete("/admin/trending/pin-product", async (req, res) => {
       { $pull: { pinnedProductIds: String(productId) } },
       { new: true }
     );
+    searchRoute.clearTrendingCache(store);
     res.json(settings || { pinnedProductIds: [] });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -155,6 +179,7 @@ router.post("/admin/trending/pin-collection", async (req, res) => {
       { $addToSet: { pinnedCollectionIds: String(collectionId) } },
       { new: true, upsert: true }
     );
+    searchRoute.clearTrendingCache(store);
     res.json(settings);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -174,6 +199,7 @@ router.delete("/admin/trending/pin-collection", async (req, res) => {
       { $pull: { pinnedCollectionIds: String(collectionId) } },
       { new: true }
     );
+    searchRoute.clearTrendingCache(store);
     res.json(settings || { pinnedCollectionIds: [] });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -193,6 +219,7 @@ router.post("/admin/trending/pin-brand", async (req, res) => {
       { $addToSet: { pinnedBrandNames: String(brandName) } },
       { new: true, upsert: true }
     );
+    searchRoute.clearTrendingCache(store);
     res.json(settings);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -212,6 +239,7 @@ router.delete("/admin/trending/pin-brand", async (req, res) => {
       { $pull: { pinnedBrandNames: String(brandName) } },
       { new: true }
     );
+    searchRoute.clearTrendingCache(store);
     res.json(settings || { pinnedBrandNames: [] });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -231,6 +259,89 @@ router.post("/admin/trending/clear-pins", async (req, res) => {
       { $set: { pinnedProductIds: [], pinnedCollectionIds: [], pinnedBrandNames: [] } },
       { new: true, upsert: true }
     );
+    searchRoute.clearTrendingCache(store);
+    res.json(settings);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// TRENDING EXCLUDE (remove products from trending)
+// ============================================================
+
+// POST /api/admin/trending/exclude-product
+// body: { shop, productId }  — hide this product from trending permanently
+router.post("/admin/trending/exclude-product", async (req, res) => {
+  try {
+    const { shop, productId } = req.body;
+    if (!shop || !productId) return res.status(400).json({ error: "Shop and productId required" });
+
+    const store = normalizeStoreDomain(shop);
+    const settings = await TrendingSettings.findOneAndUpdate(
+      { store },
+      {
+        $addToSet: { excludedProductIds: String(productId) },
+        $pull:     { pinnedProductIds:   String(productId) }  // remove from pinned too if present
+      },
+      { new: true, upsert: true }
+    );
+    searchRoute.clearTrendingCache(store);
+    res.json(settings);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/admin/trending/exclude-product
+// body: { shop, productId }  — restore product back to trending pool
+router.delete("/admin/trending/exclude-product", async (req, res) => {
+  try {
+    const { shop, productId } = req.body;
+    if (!shop || !productId) return res.status(400).json({ error: "Shop and productId required" });
+
+    const store = normalizeStoreDomain(shop);
+    const settings = await TrendingSettings.findOneAndUpdate(
+      { store },
+      { $pull: { excludedProductIds: String(productId) } },
+      { new: true }
+    );
+    searchRoute.clearTrendingCache(store);
+    res.json(settings || { excludedProductIds: [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/trending/excluded-products?shop=xxx
+// List all currently excluded product IDs
+router.get("/admin/trending/excluded-products", async (req, res) => {
+  try {
+    const { shop } = req.query;
+    if (!shop) return res.status(400).json({ error: "Shop required" });
+
+    const store = normalizeStoreDomain(shop);
+    const settings = await TrendingSettings.findOne({ store }).lean();
+    res.json({ excludedProductIds: settings?.excludedProductIds || [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/admin/trending/clear-excluded
+// Clear all excluded products (restore all to trending pool)
+router.post("/admin/trending/clear-excluded", async (req, res) => {
+  try {
+    const { shop } = req.body;
+    if (!shop) return res.status(400).json({ error: "Shop required" });
+
+    const store = normalizeStoreDomain(shop);
+    const settings = await TrendingSettings.findOneAndUpdate(
+      { store },
+      { $set: { excludedProductIds: [] } },
+      { new: true, upsert: true }
+    );
+    searchRoute.clearTrendingCache(store);
     res.json(settings);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -262,7 +373,8 @@ router.put("/admin/search-options", async (req, res) => {
       { $set: updates },
       { new: true, upsert: true }
     );
-    // Note: search.js settings cache expires in 1 min — changes take effect within 1 minute
+    searchRoute.clearSettingsCache(shop);
+    searchRoute.clearSearchCache(shop);
     res.json(settings?.searchOptions || {});
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -278,6 +390,54 @@ router.get("/admin/search-options", async (req, res) => {
     let settings = await Settings.findOne({ shop }).lean();
     if (!settings) settings = await Settings.create({ shop });
     res.json(settings?.searchOptions || {});
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// SEARCH SETTINGS ADMIN CONTROL
+// (typoEnabled, typoTolerance, defaultSort, synonymsEnabled, searchType)
+// ============================================================
+
+// GET /api/admin/search-settings?shop=xxx
+router.get("/admin/search-settings", async (req, res) => {
+  try {
+    const { shop } = req.query;
+    if (!shop) return res.status(400).json({ error: "Shop required" });
+
+    let settings = await Settings.findOne({ shop }).lean();
+    if (!settings) settings = await Settings.create({ shop });
+    res.json(settings?.searchSettings || {});
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/admin/search-settings
+// body: { shop, typoEnabled, typoTolerance, defaultSort, synonymsEnabled, type, maxResults }
+router.put("/admin/search-settings", async (req, res) => {
+  try {
+    const { shop, typoEnabled, typoTolerance, defaultSort, synonymsEnabled, type, maxResults } = req.body;
+    if (!shop) return res.status(400).json({ error: "Shop required" });
+
+    const validFields = { typoEnabled, typoTolerance, defaultSort, synonymsEnabled, type, maxResults };
+    const updates = {};
+    if (typoEnabled      !== undefined) updates["searchSettings.typoEnabled"]      = Boolean(typoEnabled);
+    if (typoTolerance    !== undefined) updates["searchSettings.typoTolerance"]    = String(typoTolerance);
+    if (defaultSort      !== undefined) updates["searchSettings.defaultSort"]      = String(defaultSort);
+    if (synonymsEnabled  !== undefined) updates["searchSettings.synonymsEnabled"]  = Boolean(synonymsEnabled);
+    if (type             !== undefined) updates["searchSettings.type"]             = String(type);
+    if (maxResults       !== undefined) updates["searchSettings.maxResults"]       = Number(maxResults);
+
+    const settings = await Settings.findOneAndUpdate(
+      { shop },
+      { $set: updates },
+      { new: true, upsert: true }
+    );
+    searchRoute.clearSettingsCache(shop);
+    searchRoute.clearSearchCache(shop);
+    res.json(settings?.searchSettings || {});
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -602,6 +762,255 @@ router.post("/admin/synonyms/auto-detect", async (req, res) => {
         : `${detected.length} synonym candidate(s) found — pass autoSave: true to save them`
     });
 
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// AI SETTINGS ADMIN CONTROL
+// ============================================================
+
+// GET /api/admin/ai-settings?shop=xxx
+router.get("/admin/ai-settings", async (req, res) => {
+  try {
+    const { shop } = req.query;
+    if (!shop) return res.status(400).json({ error: "Shop required" });
+
+    let settings = await Settings.findOne({ shop }).lean();
+    if (!settings) settings = await Settings.create({ shop });
+    res.json(settings?.aiSettings || { geminiEnabled: true, geminiModel: "llama-3.3-70b-versatile" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/admin/ai-settings
+// body: { shop, geminiEnabled, geminiModel, trendingCollectionsEnabled, suggestionsEnabled }
+router.put("/admin/ai-settings", async (req, res) => {
+  try {
+    const { shop, geminiEnabled, geminiModel, trendingCollectionsEnabled, suggestionsEnabled } = req.body;
+    if (!shop) return res.status(400).json({ error: "Shop required" });
+
+    const updates = {};
+    if (geminiEnabled              !== undefined) updates["aiSettings.geminiEnabled"]              = Boolean(geminiEnabled);
+    if (geminiModel                !== undefined) updates["aiSettings.geminiModel"]                = String(geminiModel);
+    if (trendingCollectionsEnabled !== undefined) updates["aiSettings.trendingCollectionsEnabled"] = Boolean(trendingCollectionsEnabled);
+    if (suggestionsEnabled         !== undefined) updates["aiSettings.suggestionsEnabled"]         = Boolean(suggestionsEnabled);
+
+    const settings = await Settings.findOneAndUpdate(
+      { shop },
+      { $set: updates },
+      { new: true, upsert: true }
+    );
+    searchRoute.clearSettingsCache(shop);
+    res.json(settings?.aiSettings || {});
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/admin/suggestions
+// Add a manual suggestion
+// body: { shop, text }
+router.post("/admin/suggestions", async (req, res) => {
+  try {
+    const { shop, text } = req.body;
+    if (!shop || !text) return res.status(400).json({ error: "Shop and text required" });
+
+    const cleaned = text.toLowerCase().trim();
+    if (cleaned.length < 2 || cleaned.length > 80) {
+      return res.status(400).json({ error: "Text must be 2-80 characters" });
+    }
+
+    const settings = await Settings.findOneAndUpdate(
+      { shop },
+      { $addToSet: { "aiSettings.manualSuggestions": cleaned } },
+      { new: true, upsert: true }
+    );
+    searchRoute.clearSettingsCache(shop);
+    res.json({ manualSuggestions: settings?.aiSettings?.manualSuggestions || [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/admin/suggestions
+// Remove a manual suggestion
+// body: { shop, text }
+router.delete("/admin/suggestions", async (req, res) => {
+  try {
+    const { shop, text } = req.body;
+    if (!shop || !text) return res.status(400).json({ error: "Shop and text required" });
+
+    const settings = await Settings.findOneAndUpdate(
+      { shop },
+      { $pull: { "aiSettings.manualSuggestions": text.toLowerCase().trim() } },
+      { new: true }
+    );
+    searchRoute.clearSettingsCache(shop);
+    res.json({ manualSuggestions: settings?.aiSettings?.manualSuggestions || [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/suggestions?shop=xxx
+// List manual suggestions
+router.get("/admin/suggestions", async (req, res) => {
+  try {
+    const { shop } = req.query;
+    if (!shop) return res.status(400).json({ error: "Shop required" });
+
+    const settings = await Settings.findOne({ shop }).lean();
+    res.json({ manualSuggestions: settings?.aiSettings?.manualSuggestions || [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// DISPLAY SETTINGS (public read + admin write)
+// Controls what the storefront shows: trending collections, suggestions
+// ============================================================
+
+// GET /api/display-settings?store=xxx  — public (storefront reads this)
+router.get("/display-settings", async (req, res) => {
+  try {
+    const shop = normalizeStoreDomain(req.query.store || req.query.shop || "");
+    if (!shop) return res.status(400).json({ error: "store required" });
+
+    const settings = await Settings.findOne({ shop }).lean();
+    const ai = settings?.aiSettings || {};
+
+    res.json({
+      showTrendingCollections: ai.trendingCollectionsEnabled === true,
+      showSuggestions:         ai.suggestionsEnabled !== false   // default true
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/admin/display-settings  — admin write
+// body: { shop, showTrendingCollections, showSuggestions }
+router.put("/admin/display-settings", async (req, res) => {
+  try {
+    const { shop, showTrendingCollections, showSuggestions } = req.body;
+    if (!shop) return res.status(400).json({ error: "shop required" });
+
+    const updates = {};
+    if (showTrendingCollections !== undefined)
+      updates["aiSettings.trendingCollectionsEnabled"] = Boolean(showTrendingCollections);
+    if (showSuggestions !== undefined)
+      updates["aiSettings.suggestionsEnabled"] = Boolean(showSuggestions);
+
+    const settings = await Settings.findOneAndUpdate(
+      { shop },
+      { $set: updates },
+      { new: true, upsert: true }
+    );
+    searchRoute.clearSettingsCache(shop);
+
+    const ai = settings?.aiSettings || {};
+    res.json({
+      showTrendingCollections: ai.trendingCollectionsEnabled === true,
+      showSuggestions:         ai.suggestionsEnabled !== false
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// FILTER CONFIG (admin)
+// ============================================================
+
+// GET /api/admin/filters?shop=xxx
+// Returns current filter config for the store
+router.get("/admin/filters", async (req, res) => {
+  try {
+    const { shop } = req.query;
+    if (!shop) return res.status(400).json({ error: "Shop required" });
+
+    let settings = await Settings.findOne({ shop }).lean();
+    if (!settings) settings = await Settings.create({ shop });
+
+    res.json(settings.filters || { enabled: true, active: [], hideOutOfStock: false });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/admin/filters
+// body: { shop, enabled?, active?: ["price","vendor","color","category"], hideOutOfStock? }
+router.put("/admin/filters", async (req, res) => {
+  try {
+    const { shop, enabled, active, hideOutOfStock } = req.body;
+    if (!shop) return res.status(400).json({ error: "Shop required" });
+
+    const ALLOWED_FILTERS = ["price", "vendor", "color", "category"];
+    const updates = {};
+
+    if (enabled !== undefined)        updates["filters.enabled"]        = Boolean(enabled);
+    if (hideOutOfStock !== undefined) updates["filters.hideOutOfStock"] = Boolean(hideOutOfStock);
+    if (Array.isArray(active)) {
+      updates["filters.active"] = active.filter(f => ALLOWED_FILTERS.includes(f));
+    }
+
+    const settings = await Settings.findOneAndUpdate(
+      { shop },
+      { $set: updates },
+      { new: true, upsert: true }
+    );
+    searchRoute.clearSettingsCache(shop);
+    res.json(settings.filters);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/filter-options?shop=xxx
+// Returns available filter values from the product DB for this store
+// Used by storefront to populate filter dropdowns
+router.get("/filter-options", async (req, res) => {
+  try {
+    const shop = normalizeStoreDomain(req.query.shop || req.query.store || "");
+    if (!shop) return res.status(400).json({ error: "shop required" });
+
+    const baseMatch = { store: shop, status: "ACTIVE" };
+
+    const [vendors, colors, priceRange, topTags] = await Promise.all([
+      // Distinct vendors (sorted alphabetically)
+      Product.distinct("vendor", baseMatch).then(v =>
+        v.filter(Boolean).sort((a, b) => a.localeCompare(b))
+      ),
+
+      // Distinct colors (flatten array field)
+      Product.aggregate([
+        { $match: baseMatch },
+        { $unwind: { path: "$colors", preserveNullAndEmpty: false } },
+        { $group: { _id: "$colors" } },
+        { $sort: { _id: 1 } }
+      ]).then(docs => docs.map(d => d._id).filter(Boolean)),
+
+      // Price min / max
+      Product.aggregate([
+        { $match: { ...baseMatch, price: { $gt: 0 } } },
+        { $group: { _id: null, min: { $min: "$price" }, max: { $max: "$price" } } }
+      ]).then(docs => docs[0] ? { min: docs[0].min, max: docs[0].max } : { min: 0, max: 0 }),
+
+      // Top 50 tags by frequency
+      Product.aggregate([
+        { $match: baseMatch },
+        { $unwind: { path: "$tags", preserveNullAndEmpty: false } },
+        { $group: { _id: "$tags", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 50 }
+      ]).then(docs => docs.map(d => d._id).filter(Boolean))
+    ]);
+
+    res.json({ vendors, colors, price: priceRange, tags: topTags });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

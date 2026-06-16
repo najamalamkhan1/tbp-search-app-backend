@@ -12,23 +12,24 @@ app.use("/webhooks",
   })
 );
 app.use(express.json());
-const allowedOrigins = [
-  "https://admin.shopify.com",
-];
-
 app.use(cors({
   origin: function (origin, callback) {
 
-    // POSTMAN / SERVER REQUESTS
-    if (!origin) {
+    // Postman / server-to-server (no origin header)
+    if (!origin) return callback(null, true);
+
+    // Localhost — local development
+    if (
+      origin.includes("localhost") ||
+      origin.includes("127.0.0.1")
+    ) {
       return callback(null, true);
     }
 
-    console.log("ORIGIN:", origin);
-
-    // SHOPIFY STORES
+    // Shopify ecosystem
     if (
       origin.endsWith(".myshopify.com") ||
+      origin.includes("admin.shopify.com") ||
       origin.includes(".trycloudflare.com") ||
       origin.includes(".workers.dev") ||
       origin.includes("nainpreet.com")
@@ -36,7 +37,7 @@ app.use(cors({
       return callback(null, true);
     }
 
-    return callback(null, true); // 🔥 TEMP ALLOW ALL
+    return callback(null, true);
   },
 
   credentials: true,
@@ -51,8 +52,34 @@ const db = mongoose.connection;
 db.on('error', (error) => {
   console.log("Error Occured", error);
 });
-db.once('connected', () => {
+db.once('connected', async () => {
   console.log('MongoDB connected');
+  try {
+    const Product = require('./Models/productModel');
+    const col = Product.collection;
+    const indexes = await col.indexes();
+
+    // Drop ANY existing text index that doesn't have store+status prefix
+    const badTextIndex = indexes.find(i => i.textIndexVersion && !i.key?.store);
+    if (badTextIndex) {
+      await col.dropIndex(badTextIndex.name);
+      console.log('[Migration] Dropped old text index:', badTextIndex.name);
+    }
+
+    // Always ensure the correct compound text index exists
+    const hasCorrectIndex = indexes.find(i => i.name === 'store_status_text_search');
+    if (!hasCorrectIndex) {
+      await col.createIndex(
+        { store: 1, status: 1, title: 'text', vendor: 'text', searchableText: 'text' },
+        { weights: { title: 10, vendor: 7, searchableText: 3 }, name: 'store_status_text_search' }
+      );
+      console.log('[Migration] Compound text index created ✓');
+    } else {
+      console.log('[Migration] Text index OK ✓');
+    }
+  } catch (e) {
+    console.error('[Migration] Error:', e.message);
+  }
 })
 
 // Routes files import
