@@ -22,6 +22,7 @@ const aiInFlight = new Map(); // in-flight dedup: same query → share one AI ca
 
 const AI_PRIMARY_MODEL = "llama-3.3-70b-versatile";
 const AI_FALLBACK_MODEL = "llama-3.1-8b-instant";
+const AI_SEARCH_BLOCKING_BUDGET_MS = 120;
 const SAFE_EXPANSION_MODELS = new Set([
   "llama-3.3-70b-versatile",
   "llama-3.1-8b-instant"
@@ -675,6 +676,8 @@ router.post("/stores/add", async (req, res) => {
 });
 
 const settingsCache = {};
+const filterConfigCache = {};
+const FILTER_CONFIG_CACHE_TTL = 1000 * 60;
 const SETTINGS_CACHE_TTL = 1000 * 60; // 1 min — fast refresh when admin updates options
 
 const getSearchSettings = async (shop) => {
@@ -687,9 +690,53 @@ const getSearchSettings = async (shop) => {
     searchSettings: doc?.searchSettings || {},
     searchOptions: doc?.searchOptions || {},
     aiSettings: doc?.aiSettings || {},
+    filters: doc?.filters || {},
     country: doc?.country || "Pakistan"
   };
   settingsCache[shop] = { data, timestamp: Date.now() };
+  return data;
+};
+
+const normalizeActiveFilterKey = (f) => ({
+  collections: "collection",
+  collection_id: "collection",
+  color_swatch: "color",
+  colors: "color",
+  colour: "color",
+  colours: "color",
+  sizes: "size",
+  variant_option: "size",
+  product_type: "productType",
+  type: "productType",
+  brand: "vendor",
+  brands: "vendor",
+  stock: "availability",
+  in_stock: "availability",
+  category: "tag"
+}[f] || f);
+
+const getActiveFilterConfig = async (shop, filterSettings = {}) => {
+  const cached = filterConfigCache[shop];
+  if (cached && Date.now() - cached.timestamp < FILTER_CONFIG_CACHE_TTL) return cached.data;
+
+  const customFilters = await Filter.find({ shop })
+    .select("filterType status visibility settings.enabled")
+    .lean()
+    .maxTimeMS(1000);
+
+  const usesCustomFilters = customFilters.length > 0;
+  const activeFilterKeys = usesCustomFilters
+    ? customFilters
+      .filter(filter =>
+        filter.status === "active" &&
+        filter.visibility === "visible" &&
+        filter.settings?.enabled !== false
+      )
+      .map(filter => normalizeActiveFilterKey(filter.filterType))
+    : (filterSettings.active || []).map(normalizeActiveFilterKey);
+
+  const data = { usesCustomFilters, activeFilters: new Set(activeFilterKeys) };
+  filterConfigCache[shop] = { data, timestamp: Date.now() };
   return data;
 };
 
@@ -699,10 +746,43 @@ const getSearchSettings = async (shop) => {
 
 const vendorCache = {};
 const searchCache = {};
+const collectionSearchCache = {};
 const SEARCH_CACHE_TTL = 1000 * 60;
 const SEARCH_CACHE_MAX = 500;
-const SEARCH_RANKING_VERSION = "filters-pagination-hard48-v1";
+const SEARCH_RANKING_VERSION = "filters-fast-cache-v2";
 const CACHE_TIME = 1000 * 60 * 2;
+const COLLECTION_SEARCH_CACHE_TTL = 1000 * 60 * 5;
+const COLLECTION_FETCH_BUDGET_MS = 80;
+
+const getCachedVendorCollections = async (shop, vendor) => {
+  const cleanVendor = String(vendor || "").trim();
+  if (!shop || !cleanVendor) return [];
+
+  const cacheKey = `${shop}|vendor|${normalizeVendorName(cleanVendor)}`;
+  const cached = collectionSearchCache[cacheKey];
+  if (cached && Date.now() - cached.timestamp < COLLECTION_SEARCH_CACHE_TTL) {
+    return cached.data;
+  }
+
+  const exactVendor = new RegExp(`^${escapeRegex(cleanVendor)}$`, "i");
+  const vendorText = new RegExp(escapeRegex(cleanVendor), "i");
+  const docs = await Collection.find({
+    store: shop,
+    $or: [
+      { vendor: exactVendor },
+      { title: vendorText },
+      { searchableText: vendorText }
+    ]
+  })
+    .sort({ firstPublishedAt: -1, shopifyCreatedAt: -1 })
+    .limit(20)
+    .select("collectionId title handle image description productsCount vendor shopifyCreatedAt shopifyPublishedAt firstPublishedAt searchableText")
+    .lean()
+    .maxTimeMS(250);
+
+  collectionSearchCache[cacheKey] = { data: docs, timestamp: Date.now() };
+  return docs;
+};
 
 // Trending routes cache — results change slowly, 3-min TTL is fine
 const trendingCache = {};
@@ -1094,37 +1174,7 @@ router.get("/search", async (req, res) => {
     const aiSettings = settingsData.aiSettings || {};
     const filterSettings = settingsData.filters || {};
     const filtersEnabled = filterSettings.enabled !== false;
-    const normalizeActiveFilterKey = (f) => ({
-      collections: "collection",
-      collection_id: "collection",
-      color_swatch: "color",
-      colors: "color",
-      colour: "color",
-      colours: "color",
-      sizes: "size",
-      variant_option: "size",
-      product_type: "productType",
-      type: "productType",
-      brand: "vendor",
-      brands: "vendor",
-      stock: "availability",
-      in_stock: "availability",
-      category: "tag"
-    }[f] || f);
-    const customFilters = await Filter.find({ shop })
-      .select("filterType status visibility settings.enabled")
-      .lean();
-    const usesCustomFilters = customFilters.length > 0;
-    const activeFilterKeys = usesCustomFilters
-      ? customFilters
-        .filter(filter =>
-          filter.status === "active" &&
-          filter.visibility === "visible" &&
-          filter.settings?.enabled !== false
-        )
-        .map(filter => normalizeActiveFilterKey(filter.filterType))
-      : (filterSettings.active || []).map(normalizeActiveFilterKey);
-    const activeFilters = new Set(activeFilterKeys);
+    const { usesCustomFilters, activeFilters } = await getActiveFilterConfig(shop, filterSettings);
     const isFilterActive = (name) =>
       filtersEnabled && (usesCustomFilters ? activeFilters.has(name) : (activeFilters.size === 0 || activeFilters.has(name)));
     const hideOutOfStock = filtersEnabled && filterSettings.hideOutOfStock === true;
@@ -1191,7 +1241,10 @@ router.get("/search", async (req, res) => {
     // 🤖 APPLY AI EXPANSION
     // DB queries done — Groq likely already responded by now
     // =========================
-    const aiExpansion = await aiExpansionPromise;
+    const aiExpansion = await Promise.race([
+      aiExpansionPromise,
+      new Promise(resolve => setTimeout(() => resolve(null), AI_SEARCH_BLOCKING_BUDGET_MS))
+    ]);
 
     if (aiExpansion) {
       if (aiExpansion.corrected && aiExpansion.corrected !== originalQuery) {
@@ -2142,13 +2195,13 @@ collections searchableText tags colors sizes status
       )
     ];
 
-    const collectionFetchPromise = detectedVendor
-      ? Collection.find({ store: cleanStore, $text: { $search: detectedVendor } })
-        .sort({ firstPublishedAt: -1, shopifyCreatedAt: -1 })
-        .limit(20)
-        .lean()
-      : !includeCollections
+    const collectionFetchPromise = !includeCollections
       ? Promise.resolve([])
+      : detectedVendor
+      ? getCachedVendorCollections(cleanStore, detectedVendor).catch(err => {
+        console.warn("[Search] vendor collections skipped:", err.message);
+        return [];
+      })
       : colorOnlySearch
       ? Promise.resolve([])
       : rawCollectionIds.length
@@ -2884,7 +2937,10 @@ collections searchableText tags colors sizes status
     // collectionFetchPromise was launched before scoring — likely already resolved
     // =========================
     const __colStart = Date.now();
-    let collections = await collectionFetchPromise;
+    let collections = await Promise.race([
+      collectionFetchPromise,
+      new Promise(resolve => setTimeout(() => resolve([]), COLLECTION_FETCH_BUDGET_MS))
+    ]);
     console.log("Collection fetch ms:", Date.now() - __colStart, "| total so far:", Date.now() - __reqStart);
 
     // =========================
@@ -4636,7 +4692,9 @@ router.get("/typo-suggestions", async (req, res) => {
 });
 
 router.clearSettingsCache = (shop) => {
-  delete settingsCache[_norm(shop)];
+  const s = _norm(shop);
+  delete settingsCache[s];
+  delete filterConfigCache[s];
 };
 
 router.clearTrendingCache = (shop) => {
@@ -4646,6 +4704,10 @@ router.clearTrendingCache = (shop) => {
 
 router.clearSearchCache = (shop) => {
   const s = _norm(shop);
+  delete filterConfigCache[s];
+  Object.keys(collectionSearchCache).forEach(k => {
+    if (k.startsWith(`${s}|`)) delete collectionSearchCache[k];
+  });
   Object.keys(searchCache).forEach(k => {
     if (k.startsWith(`${s}|`) || k.includes(`|${s}|`)) delete searchCache[k];
   });

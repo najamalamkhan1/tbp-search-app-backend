@@ -51,6 +51,19 @@ const normalizeFilterKey = (key) => FILTER_ALIASES[key] || key;
 const normalizeCollectionId = (id) =>
   String(id || "").replace("gid://shopify/Collection/", "").trim();
 
+const filterOptionsCache = {};
+const FILTER_OPTIONS_CACHE_TTL = 1000 * 60 * 3;
+
+const getFilterOptionsCacheKey = (shop, vendor) =>
+  `${shop}|${String(vendor || "").trim().toLowerCase()}`;
+
+const clearFilterOptionsCache = (shop) => {
+  const prefix = `${normalizeStoreDomain(shop)}|`;
+  Object.keys(filterOptionsCache).forEach(key => {
+    if (key.startsWith(prefix)) delete filterOptionsCache[key];
+  });
+};
+
 router.get('/settings', async (req, res) => {
     const { shop } = req.query;
 
@@ -74,6 +87,7 @@ router.put('/settings', async (req, res) => {
 
     searchRoute.clearSettingsCache(shop);
     searchRoute.clearSearchCache(shop);
+    clearFilterOptionsCache(shop);
     res.json(settings);
 })
 
@@ -109,6 +123,9 @@ router.put('/settings/filters/order', async (req, res) => {
         { new: true }
     );
 
+    searchRoute.clearSettingsCache(shop);
+    searchRoute.clearSearchCache(shop);
+    clearFilterOptionsCache(shop);
     res.json(settings);
 });
 
@@ -1014,6 +1031,8 @@ router.put("/admin/filters", async (req, res) => {
       { new: true, upsert: true }
     );
     searchRoute.clearSettingsCache(shop);
+    searchRoute.clearSearchCache(shop);
+    clearFilterOptionsCache(shop);
     res.json(settings.filters);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1028,8 +1047,15 @@ router.get("/filter-options", async (req, res) => {
     const shop = normalizeStoreDomain(req.query.shop || req.query.store || "");
     if (!shop) return res.status(400).json({ error: "shop required" });
 
+    res.set("Cache-Control", "public, max-age=60, stale-while-revalidate=180");
     const baseMatch = { store: shop, status: "ACTIVE" };
     const vendorFilter = req.query.vendor ? String(req.query.vendor).trim() : "";
+    const cacheKey = getFilterOptionsCacheKey(shop, vendorFilter);
+    const cached = filterOptionsCache[cacheKey];
+    if (cached && Date.now() - cached.timestamp < FILTER_OPTIONS_CACHE_TTL) {
+      return res.json(cached.data);
+    }
+
     const scopedMatch = vendorFilter
       ? { ...baseMatch, vendor: { $regex: `^${vendorFilter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" } }
       : baseMatch;
@@ -1120,7 +1146,7 @@ router.get("/filter-options", async (req, res) => {
       };
     });
 
-    res.json({
+    const payload = {
       availability,
       vendors,
       colors,
@@ -1130,7 +1156,9 @@ router.get("/filter-options", async (req, res) => {
       productTypes,
       price: priceRange,
       tags: topTags
-    });
+    };
+    filterOptionsCache[cacheKey] = { data: payload, timestamp: Date.now() };
+    res.json(payload);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
