@@ -5,6 +5,7 @@ require("dotenv").config();
 const webhooks = require('./Routes/webhookRoutes');
 
 const app = express();
+app.disable("etag");
 
 app.use("/webhooks",
   express.raw({
@@ -77,6 +78,20 @@ db.once('connected', async () => {
     } else {
       console.log('[Migration] Text index OK ✓');
     }
+    const fastIndexes = [
+      [{ store: 1, status: 1, colors: 1, firstPublishedAt: -1 }, { name: 'fast_color_search' }],
+      [{ store: 1, status: 1, stock: 1, firstPublishedAt: -1 }, { name: 'fast_stock_search' }],
+      [{ store: 1, status: 1, sizes: 1, firstPublishedAt: -1 }, { name: 'fast_size_search' }],
+      [{ store: 1, status: 1, collections: 1, firstPublishedAt: -1 }, { name: 'fast_collection_search' }],
+      [{ store: 1, status: 1, productType: 1, firstPublishedAt: -1 }, { name: 'fast_product_type_search' }],
+      [{ store: 1, status: 1, tags: 1, firstPublishedAt: -1 }, { name: 'fast_tag_search' }]
+    ];
+    for (const [keys, options] of fastIndexes) {
+      if (!indexes.find(i => i.name === options.name)) {
+        await col.createIndex(keys, options);
+        console.log('[Migration] Created index:', options.name);
+      }
+    }
   } catch (e) {
     console.error('[Migration] Error:', e.message);
   }
@@ -92,6 +107,7 @@ const authRoutes = require("./Routes/authRoutes");
 const synonymRoutes = require("./Routes/synonymRoute");
 const boostRoute = require("./Routes/boostRoute");
 const collectionWebhookRoutes = require("./Routes/collectionWebhookRoutes");
+const filterRoutes = require("./Routes/filterRoutes");
 
 
 // routes
@@ -105,6 +121,7 @@ app.use("/webhooks", collectionWebhookRoutes);
 app.use("/auth", authRoutes);
 app.use("/api/synonyms", synonymRoutes);
 app.use("/api/boost", boostRoute);
+app.use("/api", filterRoutes);
 
 app.get("/", (req, res) => {
   res.send("Backend Running Successfully✅");

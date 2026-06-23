@@ -14,21 +14,96 @@ const _COLOR_TAGS = new Set([
   'maroon','navy','grey','gray','beige','cream','golden','gold','silver',
   'nude','ivory','mint','teal','mustard','burgundy','olive','rust','coral',
   'peach','lilac','lavender','rose','brown','tan','blush','turquoise',
-  'magenta','fuchsia','emerald','violet','caramel','charcoal','champagne',
+  'magenta','fuchsia','emerald','violet','caramel','charcoal','champagne','taupe',
 ]);
 const _COLOR_NORM = { gray: 'grey', gold: 'golden' };
+const _COMPOUND_COLOR_NORM = {
+  'off white': 'off-white',
+  'off-white': 'off-white',
+  offwhite: 'off-white',
+  'sky blue': 'sky blue',
+  'sky-blue': 'sky blue',
+  skyblue: 'sky blue',
+  'navy blue': 'navy blue',
+  'navy-blue': 'navy blue',
+  navyblue: 'navy blue',
+  'rose gold': 'rose gold',
+  'rose-gold': 'rose gold',
+  rosegold: 'rose gold',
+  'dark green': 'dark green',
+  'dark-green': 'dark green',
+  darkgreen: 'dark green',
+  'dark blue': 'dark blue',
+  'dark-blue': 'dark blue',
+  darkblue: 'dark blue',
+};
 
 function extractProductColors({ metafields = [], variantOptions = [], tags = [], title = '' }) {
   const found = new Set();
+  const exactCustomColors = new Set();
+  const addExactCustom = (v) => {
+    let c = (v || '').toString().toLowerCase().trim().replace(/\s+/g, ' ');
+    if (!c || c.length <= 1 || c === 'default title' || c === 'none') return;
+    if (/https?:|www\.|cdn\.|gid:|shopify|metaobject|\.com|\.webp|\.png|\.jpe?g|^\d+$/.test(c)) return;
+    c = c
+      .replace(/^["']|["']$/g, '')
+      .replace(/^off\s+white$/, 'off-white')
+      .replace(/^sky\s+blue$/, 'sky blue')
+      .replace(/^navy\s+blue$/, 'navy blue')
+      .replace(/^rose\s+gold$/, 'rose gold');
+    exactCustomColors.add(_COLOR_NORM[c] || c);
+  };
+  const addCustomValue = (value) => {
+    const raw = (value || '').toString().trim();
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        parsed.forEach(v => addCustomValue(typeof v === 'string' ? v : (v?.value || v?.label || v?.name || '')));
+        return;
+      }
+      if (parsed && typeof parsed === 'object') {
+        addCustomValue(parsed.value || parsed.label || parsed.name || '');
+        return;
+      }
+    } catch (_) {}
+    raw.split(/[,|;\/]/).forEach(v => addExactCustom(v.trim()));
+  };
+
+  metafields.forEach(mf => {
+    const namespace = String(mf.namespace || '').toLowerCase().trim();
+    const key = String(mf.key || '').toLowerCase().trim();
+    if (namespace === 'custom' && key === 'color') addCustomValue(mf.value);
+  });
+  if (exactCustomColors.size) return [...exactCustomColors];
+
   const add = (v) => {
     const c = (v || '').toLowerCase().trim().replace(/\s+/g, ' ');
-    if (c.length > 1 && c !== 'default title' && c !== 'none') {
-      found.add(_COLOR_NORM[c] || c);
+    if (c.length <= 1 || c === 'default title' || c === 'none') return;
+    if (/https?:|www\.|cdn\.|gid:|shopify|metaobject|\.com|\.webp|\.png|\.jpe?g|^\d+$/.test(c)) return;
+
+    const normalized = _COMPOUND_COLOR_NORM[c] || _COLOR_NORM[c] || c;
+    if (_COMPOUND_COLOR_NORM[c]) {
+      found.add(normalized);
+      return;
     }
+    if (_COLOR_TAGS.has(normalized)) {
+      found.add(normalized);
+      return;
+    }
+
+    const tokens = normalized.split(/[\s\-_/|,]+/).filter(Boolean);
+    const colorTokens = tokens
+      .map(t => _COLOR_NORM[t] || t)
+      .filter(t => _COLOR_TAGS.has(t));
+    colorTokens.forEach(t => found.add(t));
+    if (colorTokens.length && tokens.length <= 4 && normalized.length <= 40) found.add(normalized);
   };
 
   // 1. Metafields (color namespaces)
   metafields.forEach(mf => {
+    const label = `${mf.namespace || ''} ${mf.key || ''}`.toLowerCase();
+    if (!/(^|\W)(colou?r|shade|tone|palette)(\W|$)/i.test(label)) return;
     (mf.value || '').split(/[,|;\/]/).forEach(v => add(v.trim()));
   });
 
@@ -59,6 +134,28 @@ function extractProductColors({ metafields = [], variantOptions = [], tags = [],
   if (/rose[\s-]?gold/i.test(tl))  add('rose gold');
   if (/dark[\s-]?green/i.test(tl)) add('dark green');
   if (/dark[\s-]?blue/i.test(tl))  add('dark blue');
+
+  return [...found];
+}
+
+function extractProductSizes({ variantOptions = [], tags = [] }) {
+  const found = new Set();
+  const add = (v) => {
+    const size = String(v || '').trim();
+    if (!size || /^default title$/i.test(size) || /^none$/i.test(size)) return;
+    found.add(size);
+  };
+
+  variantOptions.forEach(opt => {
+    if (/^(size|sizes)$/i.test(opt.name || "")) add(opt.value);
+  });
+
+  (tags || []).forEach(tag => {
+    const t = String(tag || '').trim();
+    if (/^(xxs|xs|s|m|l|xl|xxl|xxxl|small|medium|large|extra small|extra large)$/i.test(t)) add(t);
+    const prefixed = t.match(/^size[:\s_-]+(.+)$/i);
+    if (prefixed) add(prefixed[1]);
+  });
 
   return [...found];
 }
@@ -118,11 +215,73 @@ async function _detectColorsVision(imageUrl, apiKey) {
 }
 
 // 🔄 SYNC PRODUCTS (Fetch version)
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function shopifyGraphqlWithRetry({ shop, accessToken, query, variables = {}, retries = 6 }) {
+  let lastError;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const response = await Promise.race([
+        fetch(`https://${shop}/admin/api/2026-04/graphql.json`, {
+          method: "POST",
+          headers: {
+            "X-Shopify-Access-Token": accessToken,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ query, variables })
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Shopify request timeout")), 60000))
+      ]);
+
+      if (response.status === 429) {
+        const waitMs = Math.min(30000, 2000 * attempt);
+        console.warn(`[Sync] Shopify rate limited. retry=${attempt}/${retries} wait=${waitMs}ms`);
+        await delay(waitMs);
+        continue;
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "");
+        lastError = new Error(`Shopify API Failed: ${response.status} ${errorText.slice(0, 200)}`);
+        if (response.status >= 500 && attempt < retries) {
+          await delay(Math.min(30000, 1500 * attempt));
+          continue;
+        }
+        throw lastError;
+      }
+
+      const data = await response.json();
+      if (data?.errors) {
+        const message = data.errors?.[0]?.message || "Shopify GraphQL Error";
+        lastError = new Error(message);
+        if (/throttle|timeout|temporar|internal/i.test(message) && attempt < retries) {
+          await delay(Math.min(30000, 1500 * attempt));
+          continue;
+        }
+        throw lastError;
+      }
+
+      return data;
+    } catch (err) {
+      lastError = err;
+      const retryable = /ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|socket|network|timeout|fetch/i.test(err.message || "");
+      if (!retryable || attempt >= retries) break;
+      const waitMs = Math.min(30000, 1500 * attempt);
+      console.warn(`[Sync] Shopify fetch failed: ${err.message}. retry=${attempt}/${retries} wait=${waitMs}ms`);
+      await delay(waitMs);
+    }
+  }
+  throw lastError || new Error("Shopify API failed after retries");
+}
+
 router.post("/sync-products", async (req, res) => {
+
+  let heartbeat;
+  let clientConnected = true;
 
   try {
 
-    let { shop } = req.body;
+    let { shop, skipVision } = req.body;
 
     if (!shop) {
 
@@ -139,6 +298,7 @@ router.post("/sync-products", async (req, res) => {
       .replace(/\/$/, "")
       .trim()
       .toLowerCase();
+    skipVision = skipVision === true || skipVision === "true";
 
     // =========================
     // 🔥 GET STORE TOKEN
@@ -160,8 +320,19 @@ router.post("/sync-products", async (req, res) => {
     res.setHeader("Connection", "keep-alive");
     res.flushHeaders();
 
+    req.on("close", () => {
+      clientConnected = false;
+      console.warn("[Sync] Client connection closed; continuing product sync in background.");
+    });
+
     const sendEvent = (data) => {
-      res.write(`data: ${JSON.stringify(data)}\n\n`);
+      if (!clientConnected || res.destroyed || res.writableEnded) return;
+      try {
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      } catch (err) {
+        clientConnected = false;
+        console.warn("[Sync] Progress stream closed:", err.message);
+      }
     };
 
     sendEvent({ type: "started", shop });
@@ -171,6 +342,9 @@ router.post("/sync-products", async (req, res) => {
     let cursor = null;
 
     let totalSynced = 0;
+    heartbeat = setInterval(() => {
+      sendEvent({ type: "ping", synced: totalSynced });
+    }, 15000);
 
     let allProductIds = new Set();
     let retryCount = 0;
@@ -184,7 +358,7 @@ router.post("/sync-products", async (req, res) => {
 query getProducts($cursor: String) {
 
   products(
-    first: 250,
+    first: 100,
     query:"status:active",
     after: $cursor
   ) {
@@ -228,6 +402,7 @@ query getProducts($cursor: String) {
           edges {
             node {
               price
+              inventoryQuantity
               selectedOptions {
                 name
                 value
@@ -253,68 +428,12 @@ query getProducts($cursor: String) {
       // =========================
       // 🔥 SHOPIFY API
       // =========================
-      const response =
-        await fetch(
-          `https://${shop}/admin/api/2026-04/graphql.json`,
-          {
-            method: "POST",
-
-            headers: {
-              "X-Shopify-Access-Token":
-                store.accessToken,
-
-              "Content-Type":
-                "application/json"
-            },
-
-            body: JSON.stringify({
-              query,
-              variables: {
-                cursor
-              }
-            })
-          }
-        );
-
-      if (response.status === 429) {
-
-        retryCount++;
-
-
-        if (retryCount >= 5) {
-
-          throw new Error(
-            "Shopify rate limit exceeded"
-          );
-
-        }
-
-        await new Promise(resolve =>
-          setTimeout(
-            resolve,
-            2000 * retryCount
-          )
-        );
-
-        continue;
-      }
-
-      // RESET RETRIES
-      retryCount = 0;
-
-      if (!response.ok) {
-        const errorText =
-          await response.text();
-
-        console.error("SHOPIFY PRODUCT API ERROR:", errorText);
-
-        throw new Error(
-          `Shopify API Failed: ${response.status}`
-        );
-
-      }
-
-      const data = await response.json();
+      const data = await shopifyGraphqlWithRetry({
+        shop,
+        accessToken: store.accessToken,
+        query,
+        variables: { cursor }
+      });
 
       // =========================
       // 🔥 CHECK ERRORS
@@ -412,6 +531,13 @@ query getProducts($cursor: String) {
             tags: Array.isArray(p.tags) ? p.tags : [],
             title: p.title || ''
           });
+          const productSizes = extractProductSizes({
+            variantOptions: allVariantOptions,
+            tags: Array.isArray(p.tags) ? p.tags : []
+          });
+          const stock = (p.variants?.edges || []).reduce((total, edge) =>
+            total + Math.max(Number(edge?.node?.inventoryQuantity || 0), 0), 0
+          );
 
           // Track for vision AI (no colors found + has image)
           if (productColors.length === 0 && p.featuredImage?.url) {
@@ -435,7 +561,11 @@ query getProducts($cursor: String) {
               ? collections
                 .map(c => c.title)
                 .join(" ")
-              : ""
+              : "",
+
+            productColors.join(" "),
+
+            productSizes.join(" ")
 
           ]
             .join(" ")
@@ -493,6 +623,10 @@ query getProducts($cursor: String) {
                     p.featuredImage?.url || "",
 
                   price: price || 0,
+
+                  stock,
+
+                  sizes: productSizes,
 
                   collections:
                     (collections || []).map(
@@ -562,7 +696,7 @@ query getProducts($cursor: String) {
       // Run after bulkWrite for products with no colors found locally
       // =========================
       const visionApiKey = process.env.GROQ_API_KEY;
-      if (noColorItems.length > 0 && visionApiKey) {
+      if (noColorItems.length > 0 && visionApiKey && !skipVision) {
         const cleanShop = shop.trim().toLowerCase();
         let visionUpdated = 0;
         for (const item of noColorItems) {
@@ -640,13 +774,17 @@ query getProducts($cursor: String) {
     // =========================
     // ✅ DONE
     // =========================
+    if (heartbeat) clearInterval(heartbeat);
     sendEvent({ type: "done", total: totalSynced });
-    res.end();
+    if (clientConnected && !res.destroyed && !res.writableEnded) {
+      res.end();
+    }
   } catch (err) {
     console.error(err);
+    if (heartbeat) clearInterval(heartbeat);
     if (!res.headersSent) {
       res.status(500).json({ error: err.message });
-    } else {
+    } else if (clientConnected && !res.destroyed && !res.writableEnded) {
       res.write(`data: ${JSON.stringify({ type: "error", message: err.message })}\n\n`);
       res.end();
     }
@@ -1141,7 +1279,10 @@ router.post("/backfill-product-colors", async (req, res) => {
         });
         if (colors.length) {
           localOps.push({
-            updateOne: { filter: { _id: product._id }, update: { $set: { colors } } }
+            updateOne: {
+              filter: { _id: product._id },
+              update: { $set: { colors } }
+            }
           });
           localUpdated++;
         }
@@ -1258,7 +1399,10 @@ router.post("/backfill-product-colors", async (req, res) => {
               .slice(0, 3);
 
             if (detectedColors.length) {
-              await Product.updateOne({ _id: product._id }, { $set: { colors: detectedColors } });
+              await Product.updateOne(
+                { _id: product._id },
+                { $set: { colors: detectedColors } }
+              );
               updated++;
             } else {
               failed++;

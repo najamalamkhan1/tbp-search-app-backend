@@ -16,6 +16,8 @@ const SettingsSchema = new mongoose.Schema({
       default: "medium"
     },
     typoEnabled: { type: Boolean, default: true },
+    typoSuggestionsEnabled: { type: Boolean, default: true },
+    typoSuggestionsAiEnabled: { type: Boolean, default: true },
     defaultSort: {
       type: String,
       enum: ["relevance", "newest", "oldest", "price_asc", "price_desc"],
@@ -28,7 +30,10 @@ const SettingsSchema = new mongoose.Schema({
 
   filters: {
     enabled: { type: Boolean, default: true },
-    active: [{ type: String }], // ["price", "vendor"]
+    active: {
+      type: [String],
+      default: ["availability", "vendor", "collection", "size", "color", "productType", "price"]
+    },
     hideOutOfStock: { type: Boolean, default: false }
   },
 

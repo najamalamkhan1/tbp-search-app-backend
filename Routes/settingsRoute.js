@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const Settings = require('../Models/settingsModel')
 const Product = require("../Models/productModel");
+const Collection = require("../Models/collectionModel");
 const TrendingSettings = require("../Models/trendingSettingsModel");
 const Synonym = require("../Models/synonymModel");
 const Analytics = require("../Models/analyticsModel");
@@ -14,6 +15,41 @@ const normalizeStoreDomain = (shop) =>
     .replace(/\/$/, "")
     .trim()
     .toLowerCase();
+
+const DEFAULT_FILTERS = {
+  enabled: true,
+  active: ["availability", "vendor", "collection", "size", "color", "productType", "price"],
+  hideOutOfStock: false
+};
+
+const ALLOWED_FILTERS = [
+  "availability",
+  "vendor",
+  "collection",
+  "collections",
+  "size",
+  "sizes",
+  "color",
+  "productType",
+  "product_type",
+  "type",
+  "price",
+  "tag",
+  "category"
+];
+
+const FILTER_ALIASES = {
+  collections: "collection",
+  sizes: "size",
+  product_type: "productType",
+  type: "productType",
+  category: "tag"
+};
+
+const normalizeFilterKey = (key) => FILTER_ALIASES[key] || key;
+
+const normalizeCollectionId = (id) =>
+  String(id || "").replace("gid://shopify/Collection/", "").trim();
 
 router.get('/settings', async (req, res) => {
     const { shop } = req.query;
@@ -65,7 +101,11 @@ router.put('/settings/filters/order', async (req, res) => {
 
     const settings = await Settings.findOneAndUpdate(
         { shop },
-        { "filters.active": active },
+        {
+          "filters.active": Array.isArray(active)
+            ? [...new Set(active.filter(f => ALLOWED_FILTERS.includes(f)).map(normalizeFilterKey))]
+            : []
+        },
         { new: true }
     );
 
@@ -415,15 +455,17 @@ router.get("/admin/search-settings", async (req, res) => {
 });
 
 // PUT /api/admin/search-settings
-// body: { shop, typoEnabled, typoTolerance, defaultSort, synonymsEnabled, type, maxResults }
+// body: { shop, typoEnabled, typoSuggestionsEnabled, typoSuggestionsAiEnabled, typoTolerance, defaultSort, synonymsEnabled, type, maxResults }
 router.put("/admin/search-settings", async (req, res) => {
   try {
-    const { shop, typoEnabled, typoTolerance, defaultSort, synonymsEnabled, type, maxResults } = req.body;
+    const { shop, typoEnabled, typoSuggestionsEnabled, typoSuggestionsAiEnabled, typoTolerance, defaultSort, synonymsEnabled, type, maxResults } = req.body;
     if (!shop) return res.status(400).json({ error: "Shop required" });
 
     const validFields = { typoEnabled, typoTolerance, defaultSort, synonymsEnabled, type, maxResults };
     const updates = {};
     if (typoEnabled      !== undefined) updates["searchSettings.typoEnabled"]      = Boolean(typoEnabled);
+    if (typoSuggestionsEnabled   !== undefined) updates["searchSettings.typoSuggestionsEnabled"]   = Boolean(typoSuggestionsEnabled);
+    if (typoSuggestionsAiEnabled !== undefined) updates["searchSettings.typoSuggestionsAiEnabled"] = Boolean(typoSuggestionsAiEnabled);
     if (typoTolerance    !== undefined) updates["searchSettings.typoTolerance"]    = String(typoTolerance);
     if (defaultSort      !== undefined) updates["searchSettings.defaultSort"]      = String(defaultSort);
     if (synonymsEnabled  !== undefined) updates["searchSettings.synonymsEnabled"]  = Boolean(synonymsEnabled);
@@ -936,26 +978,34 @@ router.get("/admin/filters", async (req, res) => {
     let settings = await Settings.findOne({ shop }).lean();
     if (!settings) settings = await Settings.create({ shop });
 
-    res.json(settings.filters || { enabled: true, active: [], hideOutOfStock: false });
+    const filters = settings.filters || DEFAULT_FILTERS;
+    res.json({
+      ...DEFAULT_FILTERS,
+      ...filters,
+      active: (filters.active || DEFAULT_FILTERS.active).map(normalizeFilterKey)
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // PUT /api/admin/filters
-// body: { shop, enabled?, active?: ["price","vendor","color","category"], hideOutOfStock? }
+// body: { shop, enabled?, active?: ["availability","vendor","collection","size","color","productType","price"], hideOutOfStock? }
 router.put("/admin/filters", async (req, res) => {
   try {
     const { shop, enabled, active, hideOutOfStock } = req.body;
     if (!shop) return res.status(400).json({ error: "Shop required" });
 
-    const ALLOWED_FILTERS = ["price", "vendor", "color", "category"];
     const updates = {};
 
     if (enabled !== undefined)        updates["filters.enabled"]        = Boolean(enabled);
     if (hideOutOfStock !== undefined) updates["filters.hideOutOfStock"] = Boolean(hideOutOfStock);
     if (Array.isArray(active)) {
-      updates["filters.active"] = active.filter(f => ALLOWED_FILTERS.includes(f));
+      updates["filters.active"] = [...new Set(
+        active
+          .filter(f => ALLOWED_FILTERS.includes(f))
+          .map(normalizeFilterKey)
+      )];
     }
 
     const settings = await Settings.findOneAndUpdate(
@@ -979,8 +1029,12 @@ router.get("/filter-options", async (req, res) => {
     if (!shop) return res.status(400).json({ error: "shop required" });
 
     const baseMatch = { store: shop, status: "ACTIVE" };
+    const vendorFilter = req.query.vendor ? String(req.query.vendor).trim() : "";
+    const scopedMatch = vendorFilter
+      ? { ...baseMatch, vendor: { $regex: `^${vendorFilter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" } }
+      : baseMatch;
 
-    const [vendors, colors, priceRange, topTags] = await Promise.all([
+    const [vendors, colors, sizes, collections, productTypes, priceRange, topTags, availability] = await Promise.all([
       // Distinct vendors (sorted alphabetically)
       Product.distinct("vendor", baseMatch).then(v =>
         v.filter(Boolean).sort((a, b) => a.localeCompare(b))
@@ -988,29 +1042,95 @@ router.get("/filter-options", async (req, res) => {
 
       // Distinct colors (flatten array field)
       Product.aggregate([
-        { $match: baseMatch },
-        { $unwind: { path: "$colors", preserveNullAndEmpty: false } },
+        { $match: scopedMatch },
+        { $unwind: { path: "$colors", preserveNullAndEmptyArrays: false } },
         { $group: { _id: "$colors" } },
         { $sort: { _id: 1 } }
       ]).then(docs => docs.map(d => d._id).filter(Boolean)),
 
+      Product.aggregate([
+        { $match: scopedMatch },
+        { $unwind: { path: "$sizes", preserveNullAndEmptyArrays: false } },
+        { $group: { _id: "$sizes" } },
+        { $sort: { _id: 1 } }
+      ]).then(docs => docs.map(d => d._id).filter(Boolean)),
+
+      Product.aggregate([
+        { $match: scopedMatch },
+        { $unwind: { path: "$collections", preserveNullAndEmptyArrays: false } },
+        { $group: { _id: "$collections" } },
+        { $sort: { _id: 1 } }
+      ]).then(docs => docs.map(d => d._id).filter(Boolean)),
+
+      Product.distinct("productType", scopedMatch).then(types =>
+        types.filter(Boolean).sort((a, b) => a.localeCompare(b))
+      ),
+
       // Price min / max
       Product.aggregate([
-        { $match: { ...baseMatch, price: { $gt: 0 } } },
+        { $match: { ...scopedMatch, price: { $gt: 0 } } },
         { $group: { _id: null, min: { $min: "$price" }, max: { $max: "$price" } } }
       ]).then(docs => docs[0] ? { min: docs[0].min, max: docs[0].max } : { min: 0, max: 0 }),
 
       // Top 50 tags by frequency
       Product.aggregate([
-        { $match: baseMatch },
-        { $unwind: { path: "$tags", preserveNullAndEmpty: false } },
+        { $match: scopedMatch },
+        { $unwind: { path: "$tags", preserveNullAndEmptyArrays: false } },
         { $group: { _id: "$tags", count: { $sum: 1 } } },
         { $sort: { count: -1 } },
         { $limit: 50 }
-      ]).then(docs => docs.map(d => d._id).filter(Boolean))
+      ]).then(docs => docs.map(d => d._id).filter(Boolean)),
+
+      Product.aggregate([
+        { $match: scopedMatch },
+        {
+          $group: {
+            _id: null,
+            inStock: { $sum: { $cond: [{ $gt: ["$stock", 0] }, 1, 0] } },
+            outOfStock: { $sum: { $cond: [{ $lte: ["$stock", 0] }, 1, 0] } }
+          }
+        }
+      ]).then(docs => docs[0]
+        ? { in_stock: docs[0].inStock, out_of_stock: docs[0].outOfStock }
+        : { in_stock: 0, out_of_stock: 0 }
+      )
     ]);
 
-    res.json({ vendors, colors, price: priceRange, tags: topTags });
+    const collectionIdsForLookup = [...new Set([
+      ...collections.map(String),
+      ...collections.map(normalizeCollectionId)
+    ].filter(Boolean))];
+    const collectionDocs = collectionIdsForLookup.length
+      ? await Collection.find({ store: shop, collectionId: { $in: collectionIdsForLookup } })
+        .select("collectionId title handle image")
+        .lean()
+      : [];
+    const collectionMap = new Map();
+    collectionDocs.forEach(c => {
+      collectionMap.set(String(c.collectionId), c);
+      collectionMap.set(normalizeCollectionId(c.collectionId), c);
+    });
+    const collectionOptions = collections.map(id => {
+      const doc = collectionMap.get(String(id)) || collectionMap.get(normalizeCollectionId(id));
+      return {
+        id: String(id),
+        title: doc?.title || String(id),
+        handle: doc?.handle || "",
+        image: doc?.image || ""
+      };
+    });
+
+    res.json({
+      availability,
+      vendors,
+      colors,
+      sizes,
+      collections,
+      collectionOptions,
+      productTypes,
+      price: priceRange,
+      tags: topTags
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

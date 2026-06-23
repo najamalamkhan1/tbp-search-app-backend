@@ -10,6 +10,7 @@ const Collection = require("../Models/collectionModel");
 const FeaturedBrand = require("../Models/featuredBrandsModel");
 const TrendingSettings = require("../Models/trendingSettingsModel");
 const Settings = require("../Models/settingsModel");
+const Filter = require("../Models/Filter");
 const stringSimilarity = require("string-similarity");
 // =========================
 // AI EXPANSION (Groq Llama)
@@ -34,7 +35,7 @@ async function _callExpansionModel(query, modelName, apiKey, prompt) {
         headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({ model: modelName, messages: [{ role: "user", content: prompt }], max_tokens: 900, temperature: 0 })
       }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("AI timeout")), 4000))
+      new Promise((_, reject) => setTimeout(() => reject(new Error("AI timeout")), 1500))
     ]);
 
     // Fast-fail on any non-200 — no waiting, no retries in real-time search
@@ -114,13 +115,15 @@ Intent: product_search|brand_search|collection_search|category_search|color_sear
 searchKeywords: 4-5 English retrieval phrases specific to Pakistani fashion, same category/occasion as query, no prices, no brands. Use terms like "pret", "lawn suit", "3-piece", "embroidered", "designer" etc.
 negativeKeywords: only obvious opposites (unstitched query→["stitched"])
 searchPhrase: clean English $text search phrase using Pakistani fashion vocabulary
+Hard filter policy: shouldApplyColorFilter/CategoryFilter/CollectionFilter must be true ONLY when that exact color/category/collection is explicitly present in QUERY. If you infer category/productType/occasion from a generic word like "dress", keep it for soft ranking only and leave hard filter flags false.
+Do not invent productType. If query is generic, use broad searchKeywords and high confidence only for intent, not for hard filters.
 
 Return ONLY valid JSON, no markdown, no explanation:
 {"originalQuery":"","correctedQuery":"","intent":"","confidence":0,"brands":[],"categories":[],"subCategories":[],"collections":[],"colors":[],"colorSynonyms":[],"fabric":[],"materials":[],"gender":[],"ageGroup":[],"sizes":[],"occasion":[],"season":[],"attributes":[],"style":[],"embellishment":[],"priceMin":null,"priceMax":null,"keywords":[],"searchKeywords":[],"negativeKeywords":[],"shouldApplyBrandFilter":false,"shouldApplyColorFilter":false,"shouldApplyCategoryFilter":false,"shouldApplyCollectionFilter":false,"searchPhrase":""}`;
 
-    // Hard cap: 8s max — timer cancelled as soon as AI resolves (no stale logs)
+    // Hard cap: AI improves ranking, but search must not wait long for it.
     let hardTimer;
-    const hardTimeout = new Promise(resolve => { hardTimer = setTimeout(() => resolve(null), 8000); });
+    const hardTimeout = new Promise(resolve => { hardTimer = setTimeout(() => resolve(null), 2200); });
     let parsed = await Promise.race([
       (async () => {
         let result = await _callExpansionModel(query, modelName, apiKey, prompt);
@@ -294,6 +297,21 @@ const COMPOUND_COLORS = [
   [/\bdark[\s-]?blue\b/, "dark blue"],
 ];
 
+const COLOR_DB_ALIASES = {
+  // Keep DB filtering exact. Query parsers already normalize words like safed->white.
+};
+
+function expandColorTermsForDb(colors = []) {
+  const expanded = new Set();
+  colors.forEach(color => {
+    const clean = String(color || "").toLowerCase().trim();
+    if (!clean) return;
+    expanded.add(clean);
+    (COLOR_DB_ALIASES[clean] || []).forEach(alias => expanded.add(alias));
+  });
+  return [...expanded];
+}
+
 function parseColorsFromQuery(query) {
   const q = (query || "").toLowerCase();
   const found = [];
@@ -307,6 +325,61 @@ function parseColorsFromQuery(query) {
     if (normalized && !found.includes(normalized)) found.push(normalized);
   });
   return found; // e.g. ["black"] or ["off-white", "golden"]
+}
+
+function parseColorPrefixesFromQuery(query) {
+  const token = String(query || "").toLowerCase().trim().replace(/[^a-z]/g, "");
+  if (token.length < 3 || token.includes(" ")) return [];
+  const matches = new Set();
+  QUERY_COLORS.forEach((color, word) => {
+    if (word.startsWith(token) || color.startsWith(token)) {
+      matches.add(color);
+    }
+  });
+  return [...matches];
+}
+
+const QUERY_OCCASIONS = new Map([
+  ["shadi", "wedding"], ["shaadi", "wedding"], ["wedding", "wedding"],
+  ["barat", "wedding"], ["baraat", "wedding"], ["valima", "wedding"], ["waleema", "wedding"],
+  ["nikah", "wedding"], ["nikkah", "wedding"], ["bridal", "wedding"], ["dulhan", "wedding"],
+  ["mehndi", "mehndi"], ["mayun", "mehndi"],
+  ["dawat", "party"], ["dinner", "party"], ["party", "party"], ["function", "party"],
+  ["eid", "festive"], ["festive", "festive"],
+  ["office", "formal"], ["daftar", "formal"], ["formal", "formal"],
+  ["daily", "casual"], ["rozana", "casual"], ["casual", "casual"], ["university", "casual"]
+]);
+
+const OCCASION_DB_SYNONYMS = {
+  wedding: ["bridal", "wedding", "barat", "valima", "shadi", "formal", "couture"],
+  mehndi: ["mehndi", "mehendi", "festive", "yellow"],
+  party: ["party", "formal", "evening", "festive", "function"],
+  festive: ["festive", "eid", "celebration", "party"],
+  formal: ["formal", "formals", "semi formal", "office"],
+  casual: ["casual", "lawn", "pret", "daily wear"]
+};
+
+function parseOccasionsFromQuery(query) {
+  const q = (query || "").toLowerCase();
+  const found = new Set();
+  for (const [word, occasion] of QUERY_OCCASIONS.entries()) {
+    const re = new RegExp(`\\b${escapeRegex(word)}\\b`, "i");
+    if (re.test(q)) found.add(occasion);
+  }
+  return [...found];
+}
+
+function normalizeColorParamValues(value) {
+  const raw = Array.isArray(value) ? value : (value === undefined ? [] : [value]);
+  return raw
+    .flatMap(v => String(v || "").split(","))
+    .map(v => String(v || "")
+      .toLowerCase()
+      .replace(/\(\s*\d+\s*\)/g, "")
+      .replace(/\b\d+\b/g, "")
+      .trim())
+    .map(v => QUERY_COLORS.get(v) || v)
+    .filter(Boolean);
 }
 
 // =========================
@@ -462,6 +535,12 @@ const normalizeDomain = (domain) =>
 
 const escapeRegex = (value) =>
   String(value).replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&");
+const normalizeVendorName = (value) =>
+  String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 const normalizeId = (id) =>
   String(id || "").replace("gid://shopify/Collection/", "").trim();
 
@@ -471,10 +550,12 @@ const toTime = (value) => {
 };
 
 const latestProductTime = (product = {}) =>
-  // shopifyCreatedAt: Shopify creation date — completely stable, never changes on republish/sync
-  // firstPublishedAt: fallback (set once on first DB insert)
-  toTime(product.shopifyCreatedAt) ||
-  toTime(product.firstPublishedAt);
+  // firstPublishedAt is the stable "new arrival" signal.
+  // Shopify createdAt is only a fallback for old/migrated docs with missing publish dates.
+  toTime(product.firstPublishedAt) ||
+  toTime(product.shopifyPublishedAt) ||
+  toTime(product.publishedAt) ||
+  toTime(product.shopifyCreatedAt);
 
 const latestCollectionTime = (collection = {}) => {
   // Take the MORE RECENT of shopifyCreatedAt and firstPublishedAt
@@ -544,6 +625,24 @@ const isGarbageCollection = (title) => {
   return GARBAGE_COLLECTION_PATTERNS.some(p => p.test(t));
 };
 
+const GARBAGE_VENDOR_PATTERNS = [
+  /^add[\s-]?ons?$/i,
+  /^addons?$/i,
+  /^custom/i,
+  /^default/i,
+  /^test/i,
+  /^unknown$/i,
+  /^vendor$/i,
+  /^[.\-_\s]+$/,
+  /^\d+$/
+];
+
+const isGarbageVendor = (name) => {
+  const t = String(name || "").trim();
+  if (t.length < 2) return true;
+  return GARBAGE_VENDOR_PATTERNS.some(p => p.test(t));
+};
+
 const recencyScore = (time, weights = {}) => {
   const daysOld = daysSinceTime(time);
 
@@ -602,6 +701,7 @@ const vendorCache = {};
 const searchCache = {};
 const SEARCH_CACHE_TTL = 1000 * 60;
 const SEARCH_CACHE_MAX = 500;
+const SEARCH_RANKING_VERSION = "filters-pagination-hard48-v1";
 const CACHE_TIME = 1000 * 60 * 2;
 
 // Trending routes cache — results change slowly, 3-min TTL is fine
@@ -679,10 +779,44 @@ Rules: 2-5 words each, English only, season-relevant, fashion only.`;
 router.get("/search", async (req, res) => {
 
   try {
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.set("Pragma", "no-cache");
+    res.set("Expires", "0");
 
     const __reqStart = Date.now();
 
-    let { q, shop, vendor: filterVendor, minPrice: filterMinPrice, maxPrice: filterMaxPrice, color: filterColor, tag: filterTag } = req.query;
+    let {
+      q,
+      shop,
+      vendor: filterVendor,
+      brand: filterBrand,
+      brands: filterBrands,
+      minPrice: filterMinPrice,
+      min_price: filterMinPriceAlt,
+      maxPrice: filterMaxPrice,
+      max_price: filterMaxPriceAlt,
+      color: filterColor,
+      colors: filterColors,
+      colour: filterColour,
+      colours: filterColours,
+      tag: filterTag,
+      tags: filterTags,
+      collection: filterCollection,
+      collections: filterCollections,
+      collection_id: filterCollectionId,
+      collectionId: filterCollectionIdAlt,
+      size: filterSize,
+      sizes: filterSizes,
+      productType: filterProductType,
+      product_type: filterProductTypeAlt,
+      type: filterType,
+      availability: filterAvailability,
+      stock: filterStock,
+      page: requestedPage,
+      limit: requestedLimit,
+      perPage: requestedPerPage,
+      per_page: requestedPerPageAlt
+    } = req.query;
     console.log(`[SEARCH] hit → shop:${shop} q:${q}`);
 
     // =========================
@@ -698,6 +832,69 @@ router.get("/search", async (req, res) => {
 
     const originalQuery =
       q.toLowerCase();
+    const requestedColorFilter = filterColor || filterColors || filterColour || filterColours ||
+      req.query["color[]"] || req.query["colors[]"] || req.query["filter[color]"] || req.query["filter[colors]"];
+    const requestedVendorFilter = filterVendor || filterBrand || filterBrands ||
+      req.query["vendor[]"] || req.query["brand[]"] || req.query["filter[vendor]"] || req.query["filter[brand]"];
+    const requestedMinPrice = filterMinPrice || filterMinPriceAlt || req.query["filter[minPrice]"] || req.query["filter[min_price]"];
+    const requestedMaxPrice = filterMaxPrice || filterMaxPriceAlt || req.query["filter[maxPrice]"] || req.query["filter[max_price]"];
+    const requestedTagFilter = filterTag || filterTags ||
+      req.query["tag[]"] || req.query["tags[]"] || req.query["filter[tag]"] || req.query["filter[tags]"];
+    const requestedCollectionFilter = filterCollection || filterCollections || filterCollectionId || filterCollectionIdAlt ||
+      req.query["collection[]"] || req.query["collections[]"] || req.query["filter[collection]"] || req.query["filter[collections]"];
+    const requestedSizeFilter = filterSize || filterSizes ||
+      req.query["size[]"] || req.query["sizes[]"] || req.query["filter[size]"] || req.query["filter[sizes]"];
+    const requestedProductTypeFilter = filterProductType || filterProductTypeAlt || filterType ||
+      req.query["productType[]"] || req.query["product_type[]"] || req.query["filter[productType]"] || req.query["filter[product_type]"];
+    const requestedAvailabilityFilter = filterAvailability || filterStock ||
+      req.query["availability[]"] || req.query["stock[]"] || req.query["filter[availability]"] || req.query["filter[stock]"];
+    const hasRequestedFilters = Boolean(
+      requestedVendorFilter ||
+      requestedMinPrice ||
+      requestedMaxPrice ||
+      requestedColorFilter ||
+      requestedTagFilter ||
+      requestedCollectionFilter ||
+      requestedSizeFilter ||
+      requestedProductTypeFilter ||
+      requestedAvailabilityFilter
+    );
+    const includeCollections =
+      req.query.includeCollections === "true" ||
+      req.query.includeCollections === "1" ||
+      req.query.include === "collections";
+
+    const currentPage = Math.max(parseInt(requestedPage, 10) || 1, 1);
+    const pageLimit = Math.min(Math.max(parseInt(requestedLimit || requestedPerPage || requestedPerPageAlt, 10) || 48, 48), 48);
+    const pageOffset = (currentPage - 1) * pageLimit;
+    const paginatePayload = (payload) => {
+      const allProducts = Array.isArray(payload.products) ? payload.products : [];
+      const totalProducts = Number(payload.meta?.totalProducts ?? allProducts.length);
+      const totalPages = Math.max(Math.ceil(totalProducts / pageLimit), 1);
+      const pagedProducts = allProducts.slice(pageOffset, pageOffset + pageLimit).slice(0, pageLimit);
+      return {
+        ...payload,
+        meta: {
+          ...(payload.meta || {}),
+          totalProducts,
+          returnedProducts: pagedProducts.length,
+          enforcedLimit: pageLimit,
+          pagination: {
+            page: currentPage,
+            limit: pageLimit,
+            offset: pageOffset,
+            totalProducts,
+            returnedProducts: pagedProducts.length,
+            totalPages,
+            hasNextPage: currentPage < totalPages,
+            hasPrevPage: currentPage > 1,
+            nextPage: currentPage < totalPages ? currentPage + 1 : null,
+            prevPage: currentPage > 1 ? currentPage - 1 : null
+          }
+        },
+        products: pagedProducts
+      };
+    };
 
     if (!shop) {
 
@@ -712,7 +909,7 @@ router.get("/search", async (req, res) => {
 
     }
 
-    if (!q) {
+    if (!q && !hasRequestedFilters) {
 
       const latestProducts =
         await Product.find({
@@ -720,16 +917,31 @@ router.get("/search", async (req, res) => {
           status: "ACTIVE"
         })
           .sort({
-            shopifyCreatedAt: -1,
-            firstPublishedAt: -1
+            firstPublishedAt: -1,
+            shopifyPublishedAt: -1,
+            publishedAt: -1,
+            shopifyCreatedAt: -1
           })
-          .limit(20)
+          .skip(pageOffset)
+          .limit(pageLimit)
           .lean();
 
       return res.json({
         query: "",
         meta: {
-          emptySearch: true
+          emptySearch: true,
+          totalProducts: latestProducts.length,
+          pagination: {
+            page: currentPage,
+            limit: pageLimit,
+            offset: pageOffset,
+            totalProducts: latestProducts.length,
+            totalPages: currentPage,
+            hasNextPage: latestProducts.length === pageLimit,
+            hasPrevPage: currentPage > 1,
+            nextPage: latestProducts.length === pageLimit ? currentPage + 1 : null,
+            prevPage: currentPage > 1 ? currentPage - 1 : null
+          }
         },
         vendors: [],
         collections: [],
@@ -740,15 +952,132 @@ router.get("/search", async (req, res) => {
     }
 
     // Single-character queries are noise — skip DB entirely
-    if (q.length < 2) {
-      return res.json({ query: q, meta: {}, vendors: [], collections: [], products: [], suggestions: [] });
+    if (q && q.length < 3 && !hasRequestedFilters) {
+      const shortRegex = new RegExp(`^${escapeRegex(q)}`, "i");
+      const shortProductRegex = new RegExp(`(^|\\s)${escapeRegex(q)}`, "i");
+      const vendors = await Product.aggregate([
+        {
+          $match: {
+            store: cleanStore,
+            status: "ACTIVE",
+            vendor: { $regex: shortRegex }
+          }
+        },
+        {
+          $group: {
+            _id: "$vendor",
+            latestDate: {
+              $max: {
+                $ifNull: [
+                  "$firstPublishedAt",
+                  { $ifNull: ["$shopifyPublishedAt", "$shopifyCreatedAt"] }
+                ]
+              }
+            }
+          }
+        },
+        { $limit: 50 }
+      ]);
+
+      const queryText = q.toLowerCase();
+      const formattedVendors = vendors
+        .filter(v => v._id && !isGarbageVendor(v._id))
+        .map(v => {
+          const title = String(v._id || "");
+          const normalized = title.toLowerCase();
+          let score = 1000;
+          if (normalized.startsWith(queryText)) score += 50000;
+          return {
+            title,
+            type: "vendor",
+            score,
+            latestDate: v.latestDate || null
+          };
+        })
+        .sort((a, b) => b.score - a.score || String(a.title).localeCompare(String(b.title)))
+        .slice(0, 10);
+
+      const shortProductsRaw = await Product.find({
+        store: cleanStore,
+        status: "ACTIVE",
+        $or: [
+          { vendor: { $regex: shortRegex } },
+          { title: { $regex: shortProductRegex } },
+          { productType: { $regex: shortProductRegex } }
+        ]
+      })
+        .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
+        .skip(pageOffset)
+        .limit((pageLimit * 5) + 1)
+        .lean()
+        .select(`
+          productId title handle vendor image price stock productType
+          colors sizes tags collections status
+          firstPublishedAt shopifyPublishedAt publishedAt shopifyCreatedAt
+        `);
+
+      const filteredShortProductsRaw = shortProductsRaw.filter(p => !isGarbageVendor(p.vendor));
+      const hasNextPage = filteredShortProductsRaw.length > pageLimit;
+      const shortProducts = filteredShortProductsRaw.slice(0, pageLimit).map(p => {
+        const latestTime = latestProductTime(p);
+        return {
+          ...p,
+          latestTime,
+          latestDate: latestTime ? new Date(latestTime) : null,
+          score: String(p.vendor || "").toLowerCase().startsWith(queryText) ? 50000 : 10000
+        };
+      });
+      const shortTotalEstimate = pageOffset + shortProducts.length + (hasNextPage ? 1 : 0);
+
+      return res.json({
+        query: q,
+        meta: {
+          shortQuery: true,
+          aiSkipped: true,
+          totalProducts: shortTotalEstimate,
+          pagination: {
+            page: currentPage,
+            limit: pageLimit,
+            offset: pageOffset,
+            totalProducts: shortTotalEstimate,
+            totalPages: hasNextPage ? currentPage + 1 : currentPage,
+            hasNextPage,
+            hasPrevPage: currentPage > 1,
+            nextPage: hasNextPage ? currentPage + 1 : null,
+            prevPage: currentPage > 1 ? currentPage - 1 : null
+          }
+        },
+        vendors: formattedVendors,
+        collections: [],
+        products: shortProducts,
+        suggestions: []
+      });
     }
 
-    // 🔥 CACHE CHECK — wahi query 60s ke andar? pura kaam skip
-    const cacheKey = `${cleanStore}|${originalQuery}`;
+    const normalizeParamList = (value) => {
+      const raw = Array.isArray(value) ? value : (value === undefined ? [] : [value]);
+      return raw
+        .flatMap(v => String(v || "").split(","))
+        .map(v => v.trim())
+        .filter(Boolean);
+    };
+    const filterStateForCache = {
+      vendor: normalizeParamList(requestedVendorFilter).sort(),
+      minPrice: requestedMinPrice || "",
+      maxPrice: requestedMaxPrice || "",
+      color: normalizeColorParamValues(requestedColorFilter).sort(),
+      tag: normalizeParamList(requestedTagFilter).sort(),
+      collection: normalizeParamList(requestedCollectionFilter).sort(),
+      size: normalizeParamList(requestedSizeFilter).sort(),
+      productType: normalizeParamList(requestedProductTypeFilter).sort(),
+      availability: normalizeParamList(requestedAvailabilityFilter).sort()
+    };
+
+    // Cache by query + filters so filtered result sets do not leak into each other.
+    const cacheKey = `${SEARCH_RANKING_VERSION}|${cleanStore}|${originalQuery}|${JSON.stringify(filterStateForCache)}`;
     const cachedSearch = searchCache[cacheKey];
     if (cachedSearch && Date.now() - cachedSearch.timestamp < SEARCH_CACHE_TTL) {
-      return res.json(cachedSearch.data);
+      return res.json(paginatePayload(cachedSearch.data));
     }
 
     // =========================
@@ -764,21 +1093,76 @@ router.get("/search", async (req, res) => {
     const searchOpts = settingsData.searchOptions || {};
     const aiSettings = settingsData.aiSettings || {};
     const filterSettings = settingsData.filters || {};
-    const hideOutOfStock = filterSettings.hideOutOfStock === true;
+    const filtersEnabled = filterSettings.enabled !== false;
+    const normalizeActiveFilterKey = (f) => ({
+      collections: "collection",
+      collection_id: "collection",
+      color_swatch: "color",
+      colors: "color",
+      colour: "color",
+      colours: "color",
+      sizes: "size",
+      variant_option: "size",
+      product_type: "productType",
+      type: "productType",
+      brand: "vendor",
+      brands: "vendor",
+      stock: "availability",
+      in_stock: "availability",
+      category: "tag"
+    }[f] || f);
+    const customFilters = await Filter.find({ shop })
+      .select("filterType status visibility settings.enabled")
+      .lean();
+    const usesCustomFilters = customFilters.length > 0;
+    const activeFilterKeys = usesCustomFilters
+      ? customFilters
+        .filter(filter =>
+          filter.status === "active" &&
+          filter.visibility === "visible" &&
+          filter.settings?.enabled !== false
+        )
+        .map(filter => normalizeActiveFilterKey(filter.filterType))
+      : (filterSettings.active || []).map(normalizeActiveFilterKey);
+    const activeFilters = new Set(activeFilterKeys);
+    const isFilterActive = (name) =>
+      filtersEnabled && (usesCustomFilters ? activeFilters.has(name) : (activeFilters.size === 0 || activeFilters.has(name)));
+    const hideOutOfStock = filtersEnabled && filterSettings.hideOutOfStock === true;
     const storedModel = aiSettings.geminiModel;
     const aiModelName = storedModel && SAFE_EXPANSION_MODELS.has(storedModel)
       ? storedModel
       : AI_PRIMARY_MODEL;
     const aiEnabled = aiSettings.geminiEnabled !== false;
+    const parsedExactColors = parseColorsFromQuery(originalQuery);
+    const localColors = parsedExactColors.length ? parsedExactColors : parseColorPrefixesFromQuery(originalQuery);
+    const localOccasions = parseOccasionsFromQuery(originalQuery);
+    const localMinPrice = parseMinPriceFromQuery(originalQuery);
+    const localMaxPrice = parseMaxPriceFromQuery(originalQuery);
+    const aiQueryTokens = originalQuery.split(/\s+/).filter(Boolean);
+    const oneTokenQuery = aiQueryTokens.length === 1;
+    const directColorQuery = oneTokenQuery && localColors.length > 0;
+    const hasPriceIntent = Boolean(localMinPrice || localMaxPrice);
+    const hasSemanticIntent = localOccasions.length > 0 || hasPriceIntent;
+    const shouldRunAiExpansion =
+      aiEnabled &&
+      Boolean(process.env.GROQ_API_KEY) &&
+      originalQuery.length >= 4 &&
+      !hasRequestedFilters &&
+      !oneTokenQuery &&
+      !directColorQuery &&
+      (
+        hasSemanticIntent ||
+        aiQueryTokens.length >= 3
+      );
 
     // =========================
     // 🤖 AI CALL — settings loaded, fire with correct model + only if enabled
     // =========================
-    console.log(`[AI] Check → aiEnabled:${aiEnabled} | key:${!!process.env.GROQ_API_KEY} | model:${aiModelName} | qLen:${originalQuery.length}`);
+    console.log(`[AI] ${shouldRunAiExpansion ? "Run" : "Skip"} -> aiEnabled:${aiEnabled} | key:${!!process.env.GROQ_API_KEY} | model:${aiModelName} | qLen:${originalQuery.length}`);
     if (!aiEnabled) console.warn("[AI] DISABLED — set geminiEnabled:true via PUT /api/admin/ai-settings");
 
     const storeCtx = vendorCacheHit ? { vendors: vendorCache[shop].data } : {};
-    const aiExpansionPromise = aiEnabled && process.env.GROQ_API_KEY && originalQuery.length >= 4
+    const aiExpansionPromise = shouldRunAiExpansion
       ? getAiExpansion(originalQuery, aiModelName, storeCtx)
       : Promise.resolve(null);
 
@@ -813,9 +1197,6 @@ router.get("/search", async (req, res) => {
       if (aiExpansion.corrected && aiExpansion.corrected !== originalQuery) {
         allSearchTerms = [aiExpansion.corrected, ...allSearchTerms];
       }
-      if (aiExpansion.related?.length) {
-        allSearchTerms.push(...aiExpansion.related);
-      }
       allSearchTerms = [...new Set(allSearchTerms)];
     }
 
@@ -824,13 +1205,22 @@ router.get("/search", async (req, res) => {
     // Local parsers run on raw query (no AI needed — fast + reliable).
     // AI values fill in when local parsing misses something.
     // =========================
-    const localColors = parseColorsFromQuery(originalQuery);
-    const localMinPrice = parseMinPriceFromQuery(originalQuery);
+    const selectedColorTerms = isFilterActive("color")
+      ? normalizeColorParamValues(requestedColorFilter)
+      : [];
+    const hardColorTerms = [...new Set([...localColors, ...selectedColorTerms]
+      .map(c => String(c || "").toLowerCase().trim())
+      .filter(Boolean))];
+    const dbColorTerms = expandColorTermsForDb(hardColorTerms);
+    const aiColorTerms = (aiExpansion?.colors?.length ? aiExpansion.colors : (aiExpansion?.color ? [aiExpansion.color] : []))
+      .map(c => String(c || "").toLowerCase().trim())
+      .filter(Boolean);
 
-    // Prefer local detection; fall back to AI (use full colors array, not just first)
-    const effectiveColors = localColors.length
-      ? localColors
-      : (aiExpansion?.colors?.length ? aiExpansion.colors : (aiExpansion?.color ? [aiExpansion.color] : []));
+    // Prefer explicit query/filter colors for hard filtering. AI colors are soft scoring only.
+    const effectiveColors = hardColorTerms.length
+      ? hardColorTerms
+      : aiColorTerms;
+    const colorOnlySearch = oneTokenQuery && hardColorTerms.length > 0 && !hasRequestedFilters;
 
     // Add English color translations to allSearchTerms so Urdu color words (lal, kala)
     // also find products tagged/titled in English
@@ -841,14 +1231,8 @@ router.get("/search", async (req, res) => {
       allSearchTerms = [...new Set(allSearchTerms)];
     }
 
-    // Add AI-detected product type to search terms (e.g. "saree", "lehenga", "necklace")
-    if (aiExpansion?.productType) {
-      const pt = aiExpansion.productType;
-      if (!allSearchTerms.some(t => t === pt || t.includes(pt))) {
-        allSearchTerms.push(pt);
-        allSearchTerms = [...new Set(allSearchTerms)];
-      }
-    }
+    // AI product/category/occasion signals stay in scoring only. Hard DB fetch must
+    // stay anchored to user query, selected filters, and local explicit parsers.
 
     // =========================
     // 🔥 BOOSTS
@@ -883,31 +1267,32 @@ router.get("/search", async (req, res) => {
       .map(v => {
 
         const vendorName =
-          v.toLowerCase();
+          normalizeVendorName(v);
+
+        const normalizedVendorQuery =
+          normalizeVendorName(normalizedQuery);
 
         let score = 0;
 
         // EXACT MATCH
         if (
-          vendorName === normalizedQuery
+          vendorName === normalizedVendorQuery
         ) {
           score += 100000;
         }
 
         // STARTS WITH
         if (
-          vendorName.startsWith(
-            normalizedQuery
-          )
+          normalizedVendorQuery &&
+          vendorName.startsWith(normalizedVendorQuery)
         ) {
           score += 50000;
         }
 
         // CONTAINS
         if (
-          vendorName.includes(
-            normalizedQuery
-          )
+          normalizedVendorQuery &&
+          vendorName.includes(normalizedVendorQuery)
         ) {
           score += 20000;
         }
@@ -916,10 +1301,10 @@ router.get("/search", async (req, res) => {
         // First character MUST match — prevents "shadi"→"arshad" false positives.
         // Generic fashion/occasion keywords are skipped — they are never vendor signals.
         const queryTokens =
-          normalizedQuery.split(" ");
+          normalizedVendorQuery.split(" ").filter(Boolean);
 
         const vendorTokens =
-          vendorName.split(" ");
+          vendorName.split(" ").filter(Boolean);
 
         // Generic Keyword for Fashion
         const GENERIC_FASHION_WORDS = new Set([
@@ -996,6 +1381,15 @@ router.get("/search", async (req, res) => {
       detectedVendor = vendorMatches[0].vendor;
     }
 
+    if (!detectedVendor && requestedVendorFilter && isFilterActive("vendor")) {
+      const requestedVendor = normalizeVendorName(normalizeParamList(requestedVendorFilter)[0]);
+      const filterVendorMatch = uniqueVendors.find(v =>
+        normalizeVendorName(v) === requestedVendor ||
+        normalizeVendorName(v).includes(requestedVendor)
+      );
+      if (filterVendorMatch) detectedVendor = filterVendorMatch;
+    }
+
     // =========================
     // 🤖 AI BRAND HINT FALLBACK
     // Normal vendor detection failed but AI spotted a brand name in the query
@@ -1009,14 +1403,16 @@ router.get("/search", async (req, res) => {
     if (!detectedVendor && aiExpansion?.brandHint) {
       const hint = aiExpansion.brandHint;
       const hintTokens = hint.split(" ").filter(t => t.length >= 3);
-      const queryTokens = normalizedQuery.split(" ");
+      const queryTokens = normalizedQuery
+        .split(" ")
+        .filter(t => t.length >= 3 && !NON_VENDOR_KEYWORDS.has(t));
 
       // At least one hint token must appear in or closely match a query token
       const hintInQuery = hintTokens.some(ht =>
         queryTokens.some(qt =>
           qt.includes(ht) ||
           ht.includes(qt) ||
-          (qt.length >= 3 && stringSimilarity.compareTwoStrings(qt, ht) > 0.65)
+          (qt[0] === ht[0] && stringSimilarity.compareTwoStrings(qt, ht) > 0.72)
         )
       );
 
@@ -1248,33 +1644,17 @@ router.get("/search", async (req, res) => {
       allSearchTerms.map(stripPriceNoise).filter(Boolean)
     )];
 
-    // Core terms for DB query: original query + synonyms + AI productType + colors
+    // Core terms for DB query: original query + synonyms + explicit colors.
     // AI related terms are intentionally excluded — they go into scoring only, not fetching
     // Using them in $text would broaden the result set and return irrelevant products
     // Occasion → DB fetch synonyms so bridal/wedding products are included in initial pool
-    const OCCASION_DB_SYNONYMS = {
-      wedding: ['bridal', 'wedding', 'barat', 'valima', 'shadi', 'couture'],
-      mehndi: ['mehndi', 'mehendi'],
-      party: ['party', 'formal', 'evening', 'festive', 'function'],
-      festive: ['festive', 'eid', 'celebration', 'party'],
-      bridal: ['bridal', 'wedding', 'barat', 'couture', 'dulhan'],
-      formal: ['formal', 'office', 'pret'],
-      casual: ['casual', 'lawn', 'pret', 'daily'],
-      nikkah: ['bridal', 'wedding', 'formal'],
-      valima: ['bridal', 'wedding', 'formal bridal'],
-      barat: ['bridal', 'heavy', 'wedding'],
-    };
-    const occasionDbTerms = aiExpansion?.occasion
-      ? (OCCASION_DB_SYNONYMS[aiExpansion.occasion] || [])
-      : [];
-
+    const explicitOccasionDbTerms = [...new Set(localOccasions.flatMap(o => OCCASION_DB_SYNONYMS[o] || []))];
     const coreDbTerms = [...new Set([
       stripPriceNoise(originalQuery),
       ...synonymWords.map(stripPriceNoise),
       aiExpansion?.corrected ? stripPriceNoise(aiExpansion.corrected) : null,
-      aiExpansion?.productType || null,
-      ...occasionDbTerms,
-      ...effectiveColors
+      ...explicitOccasionDbTerms,
+      ...dbColorTerms
     ].filter(Boolean))];
 
     const productQuery = { store: cleanStore, status: "ACTIVE" };
@@ -1286,23 +1666,75 @@ router.get("/search", async (req, res) => {
     if (hideOutOfStock) {
       productQuery.stock = { $gt: 0 };
     }
-    if (filterVendor) {
-      productQuery.vendor = { $regex: escapeRegex(filterVendor.trim()), $options: "i" };
+    if (requestedAvailabilityFilter && isFilterActive("availability")) {
+      const availabilityValues = normalizeParamList(requestedAvailabilityFilter).map(v => v.toLowerCase());
+      const wantsInStock = availabilityValues.some(v =>
+        v === "1" || v === "true" || v === "available" || v === "in_stock" || v === "in-stock" || v === "in stock"
+      );
+      const wantsOutOfStock = availabilityValues.some(v =>
+        v === "0" || v === "false" || v === "unavailable" || v === "out_of_stock" || v === "out-of-stock" || v === "out of stock"
+      );
+      if (wantsInStock && !wantsOutOfStock) {
+        productQuery.stock = { $gt: 0 };
+      } else if (wantsOutOfStock && !wantsInStock) {
+        productQuery.stock = { $lte: 0 };
+      }
     }
-    if (filterMinPrice || filterMaxPrice) {
+    if (requestedVendorFilter && isFilterActive("vendor")) {
+      const vendorValues = normalizeParamList(requestedVendorFilter);
+      productQuery.vendor = vendorValues.length > 1
+        ? { $in: vendorValues.map(v => new RegExp(`^${escapeRegex(v)}$`, "i")) }
+        : { $regex: `^${escapeRegex(vendorValues[0])}$`, $options: "i" };
+    }
+    if ((requestedMinPrice || requestedMaxPrice) && isFilterActive("price")) {
       productQuery.price = {};
-      if (filterMinPrice) productQuery.price.$gte = Number(filterMinPrice);
-      if (filterMaxPrice) productQuery.price.$lte = Number(filterMaxPrice);
+      if (requestedMinPrice) productQuery.price.$gte = Number(requestedMinPrice);
+      if (requestedMaxPrice) productQuery.price.$lte = Number(requestedMaxPrice);
     }
-    if (filterColor) {
-      productQuery.colors = filterColor.trim().toLowerCase();
+    if (requestedColorFilter && isFilterActive("color")) {
+      productQuery.colors = { $in: expandColorTermsForDb(normalizeColorParamValues(requestedColorFilter)) };
     }
-    if (filterTag) {
-      productQuery.tags = filterTag.trim().toLowerCase();
+    if (requestedTagFilter && isFilterActive("tag")) {
+      productQuery.tags = { $in: normalizeParamList(requestedTagFilter).map(v => new RegExp(`^${escapeRegex(v)}$`, "i")) };
+    }
+    const selectedCollections = normalizeParamList(requestedCollectionFilter);
+    if (selectedCollections.length && isFilterActive("collection")) {
+      const collectionValues = new Set(selectedCollections.flatMap(id => {
+        const cleanId = normalizeId(id);
+        return [String(id), cleanId, cleanId ? `gid://shopify/Collection/${cleanId}` : ""].filter(Boolean);
+      }));
+      const collectionRegexes = selectedCollections.map(v => new RegExp(`^${escapeRegex(v)}$`, "i"));
+      const matchedCollections = await Collection.find({
+        store: cleanStore,
+        $or: [
+          { collectionId: { $in: [...collectionValues] } },
+          { handle: { $in: collectionRegexes } },
+          { title: { $in: collectionRegexes } }
+        ]
+      }).select("collectionId handle title").lean();
+      matchedCollections.forEach(c => {
+        const cleanId = normalizeId(c.collectionId);
+        if (c.collectionId) collectionValues.add(String(c.collectionId));
+        if (cleanId) {
+          collectionValues.add(cleanId);
+          collectionValues.add(`gid://shopify/Collection/${cleanId}`);
+        }
+      });
+      productQuery.collections = { $in: [...collectionValues] };
+    }
+    const selectedSizes = normalizeParamList(requestedSizeFilter);
+    if (selectedSizes.length && isFilterActive("size")) {
+      productQuery.sizes = { $in: selectedSizes.map(v => new RegExp(`^${escapeRegex(v)}$`, "i")) };
+    }
+    const selectedProductTypes = normalizeParamList(requestedProductTypeFilter);
+    if (selectedProductTypes.length && isFilterActive("productType")) {
+      productQuery.productType = selectedProductTypes.length > 1
+        ? { $in: selectedProductTypes.map(v => new RegExp(`^${escapeRegex(v)}$`, "i")) }
+        : { $regex: `^${escapeRegex(selectedProductTypes[0])}$`, $options: "i" };
     }
 
     if (detectedVendor) {
-      if (!filterVendor) {
+      if (!requestedVendorFilter) {
         productQuery.vendor = { $regex: escapeRegex(detectedVendor), $options: "i" };
       }
 
@@ -1341,11 +1773,6 @@ router.get("/search", async (req, res) => {
 
         }
 
-        // productType match (luxury + unstitched case)
-        if (aiExpansion?.productType) {
-          orConds.push({ productType: { $regex: escapeRegex(aiExpansion.productType), $options: "i" } });
-        }
-
         // Collections match
         expandedTagTerms.forEach(term => {
           orConds.push({ collections: { $regex: escapeRegex(term), $options: "i" } });
@@ -1353,11 +1780,11 @@ router.get("/search", async (req, res) => {
 
         if (orConds.length) productQuery.$or = orConds;
       }
-    } else if (canUseTextSearch) {
+    } else if (canUseTextSearch && coreDbTerms.length && !colorOnlySearch) {
       productQuery.$text = { $search: coreDbTerms.slice(0, 4).join(" ") };
     } else {
       // Admin has custom field flags — per-field regex fallback (core terms only)
-      const orConds = buildOrConds(coreDbTerms);
+      const orConds = colorOnlySearch ? [] : buildOrConds(coreDbTerms);
       if (orConds.length) productQuery.$and = [{ $or: orConds }];
     }
 
@@ -1365,12 +1792,25 @@ router.get("/search", async (req, res) => {
     // 🔥 SEARCH PRODUCTS
     // =========================
 
+    if (dbColorTerms.length) {
+      const colorTerms = [...new Set(dbColorTerms.map(c => String(c || "").toLowerCase().trim()).filter(Boolean))];
+      if (colorTerms.length) {
+        productQuery.colors = productQuery.colors || { $in: colorTerms };
+      }
+    }
+
+    const userNarrowingQuery = {};
+    ["stock", "vendor", "price", "colors", "tags", "collections", "sizes", "productType"].forEach(key => {
+      if (productQuery[key] !== undefined) userNarrowingQuery[key] = productQuery[key];
+    });
+
     const __dbStart = Date.now();
+    const productFetchLimit = Math.min(pageOffset + (pageLimit * 3), 240);
 
     const selectFields = `
-      title handle vendor image price productType
-shopifyCreatedAt shopifyPublishedAt firstPublishedAt
-collections searchableText tags colors status
+      productId title handle vendor image price stock productType
+shopifyCreatedAt shopifyPublishedAt publishedAt firstPublishedAt
+collections searchableText tags colors sizes status
       ${searchOpts.searchInDescription ? 'description' : ''}
     `;
 
@@ -1378,22 +1818,22 @@ collections searchableText tags colors status
     try {
       products = await Product.find(productQuery)
         .sort(productQuery.$text
-          ? { score: { $meta: "textScore" } }
-          : { shopifyCreatedAt: -1, firstPublishedAt: -1 })
-        .limit(100)
+          ? { firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 }
+          : { firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
+        .limit(productFetchLimit)
         .maxTimeMS(15000)
         .lean()
         .select(selectFields);
     } catch (dbErr) {
       // Text index not ready (being built) — fall back to regex search
       console.warn("[Search] $text failed, falling back to regex:", dbErr.message);
-      const fallbackQuery = { store: cleanStore, status: "ACTIVE" };
+      const fallbackQuery = { store: cleanStore, status: "ACTIVE", ...userNarrowingQuery };
       if (detectedVendor) fallbackQuery.vendor = productQuery.vendor;
       const regexOrConds = buildOrConds(coreDbTerms.slice(0, 3));
       if (regexOrConds.length) fallbackQuery.$or = regexOrConds;
       products = await Product.find(fallbackQuery)
-        .sort({ shopifyCreatedAt: -1, firstPublishedAt: -1 })
-        .limit(100)
+        .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
+        .limit(productFetchLimit)
         .lean()
         .select(selectFields);
     }
@@ -1407,10 +1847,11 @@ collections searchableText tags colors status
     // FALLBACK TYPO SEARCH
     // =========================
 
-    if (products.length < 50 && detectedVendor) {
+    if (currentPage === 1 && products.length < 50 && detectedVendor && !hasRequestedFilters) {
       const fallbackQuery = {
         store: cleanStore,
         status: "ACTIVE",
+        ...userNarrowingQuery,
         vendor: { $regex: escapeRegex(detectedVendor), $options: "i" }
       };
 
@@ -1426,7 +1867,7 @@ collections searchableText tags colors status
       }
 
       const fallbackProducts = await Product.find(fallbackQuery)
-        .sort({ firstPublishedAt: -1, shopifyCreatedAt: -1 })
+        .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
         .limit(150)
         .lean();
 
@@ -1447,6 +1888,8 @@ collections searchableText tags colors status
     const FUZZY_THRESHOLD = !typoEnabled ? 2 : typoLevel === "low" ? 0.7 : typoLevel === "high" ? 0.35 : 0.5;
 
     if (
+      currentPage === 1 &&
+      !hasRequestedFilters &&
       !detectedVendor &&
       products.length < 20 &&
       normalizedQuery.length >= 4
@@ -1468,14 +1911,14 @@ collections searchableText tags colors status
           store: cleanStore,
           status: "ACTIVE"
         })
-          .sort({ shopifyCreatedAt: -1, firstPublishedAt: -1 })
-          .limit(250)
+          .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
+          .limit(120)
           .lean()
           // description excluded — it can be thousands of words (caused 57s hang).
           // tags included — they're short words (e.g. "embroidery") that enable typo matching.
           .select(`
             title vendor productType tags handle image price
-            createdAt shopifyCreatedAt shopifyPublishedAt firstPublishedAt status
+            createdAt shopifyCreatedAt shopifyPublishedAt publishedAt firstPublishedAt status
           `);
 
         const existingIds = new Set(products.map(p => String(p._id)));
@@ -1518,34 +1961,11 @@ collections searchableText tags colors status
     // Pakistani fashion products rarely have "wedding dress" in title.
     // When occasion detected but few results, fetch products by occasion tags/collections.
     // =========================
-    if (aiExpansion?.occasion && products.length < 30 && !detectedVendor) {
-      const oTerms = occasionDbTerms.slice(0, 5);
-      if (oTerms.length) {
-        const occOrConds = [];
-        oTerms.forEach(term => {
-          const esc = escapeRegex(term);
-          occOrConds.push({ searchableText: { $regex: esc, $options: 'i' } });
-          occOrConds.push({ tags: { $regex: esc, $options: 'i' } });
-          occOrConds.push({ collections: { $regex: esc, $options: 'i' } });
-        });
-        const existingOccIds = new Set(products.map(p => String(p._id)));
-        const occasionPool = await Product.find({ store: cleanStore, status: 'ACTIVE', $or: occOrConds })
-          .sort({ shopifyCreatedAt: -1, firstPublishedAt: -1 })
-          .limit(120)
-          .lean()
-          .select(selectFields);
-        occasionPool.forEach(p => {
-          if (!existingOccIds.has(String(p._id))) products.push(p);
-        });
-      }
-    }
-
     // =========================
     // 💰 PRICE FILTER
     // Local regex parse = primary (works even if Groq times out or returns null)
     // AI maxPrice = backup / confirmation
     // =========================
-    const localMaxPrice = parseMaxPriceFromQuery(originalQuery);
     const effectiveMaxPrice = localMaxPrice || aiExpansion?.maxPrice || null;
     const effectiveMinPrice = localMinPrice || aiExpansion?.minPrice || null;
 
@@ -1569,7 +1989,7 @@ collections searchableText tags colors status
     // Products with no colors array are kept (fallback to text matching).
     // =========================
     // Skip color filter if AI says don't apply (e.g. color was hallucinated, not in query)
-    const applyColorFilter = effectiveColors.length && aiExpansion?.shouldApplyColorFilter !== false;
+    const applyColorFilter = dbColorTerms.length;
     if (applyColorFilter) {
       const productsWithColorData = products.filter(p => Array.isArray(p.colors) && p.colors.length > 0);
       const colorDataRatio = productsWithColorData.length / Math.max(products.length, 1);
@@ -1578,18 +1998,114 @@ collections searchableText tags colors status
       if (colorDataRatio >= 0.4) {
         const colorFiltered = products.filter(p => {
           const pColors = (p.colors || []).map(c => c.toLowerCase());
-          if (!pColors.length) return true; // no color data → keep (fallback to boost)
-          return effectiveColors.some(qc =>
-            pColors.some(pc => pc === qc || pc.includes(qc) || qc.includes(pc))
+          if (!pColors.length) return false;
+          return dbColorTerms.some(qc =>
+            pColors.some(pc => pc === qc)
           );
         });
-        if (colorFiltered.length >= 5) products = colorFiltered;
+        products = colorFiltered;
       }
+    }
+
+    if (dbColorTerms.length) {
+      const strictColorFiltered = products.filter(p => {
+        const pColors = (p.colors || []).map(c => String(c || "").toLowerCase());
+        if (!pColors.length) return false;
+        return dbColorTerms.some(qc => {
+          const color = String(qc || "").toLowerCase();
+          return pColors.some(pc => pc === color);
+        });
+      });
+      products = strictColorFiltered;
     }
 
     // =========================
     // 🔥 FORMAT + SCORE PRODUCTS
     // =========================
+    const productMatchesVendor = (product, vendorName) => {
+      if (!vendorName) return true;
+      const productVendor = normalizeVendorName(product.vendor);
+      const targetVendor = normalizeVendorName(vendorName);
+      return productVendor === targetVendor ||
+        productVendor.includes(targetVendor) ||
+        targetVendor.includes(productVendor);
+    };
+
+    const productSearchText = (product) => `
+      ${product.title || ""}
+      ${product.vendor || ""}
+      ${product.productType || ""}
+      ${Array.isArray(product.tags) ? product.tags.join(" ") : product.tags || ""}
+      ${Array.isArray(product.collections) ? product.collections.join(" ") : product.collections || ""}
+      ${Array.isArray(product.colors) ? product.colors.join(" ") : product.colors || ""}
+      ${product.searchableText || ""}
+    `.toLowerCase();
+
+    const productMatchesAnyTerm = (product, terms) => {
+      const cleanTerms = [...new Set((terms || [])
+        .map(t => String(t || "").toLowerCase().trim())
+        .filter(Boolean))];
+      if (!cleanTerms.length) return true;
+      const text = productSearchText(product);
+      return cleanTerms.some(term =>
+        text.includes(term) ||
+        fuzzyFieldMatch(term, text)
+      );
+    };
+
+    const productKey = (product) =>
+      String(
+        product.productId ||
+        product.id ||
+        product.handle ||
+        `${product.vendor || ""}|${product.title || ""}`
+      ).toLowerCase();
+
+    const isRtsProduct = (product) =>
+      /\brts\b/i.test(`${product.title || ""} ${Array.isArray(product.tags) ? product.tags.join(" ") : product.tags || ""}`);
+
+    const dedupeProducts = (items) => {
+      const byKey = new Map();
+      (items || []).forEach(item => {
+        const key = productKey(item);
+        if (!key) return;
+        const existing = byKey.get(key);
+        if (!existing) {
+          byKey.set(key, item);
+          return;
+        }
+        const existingTime = latestProductTime(existing);
+        const itemTime = latestProductTime(item);
+        if (
+          (item.collectionPriority && !existing.collectionPriority) ||
+          (itemTime > existingTime) ||
+          ((item.score || 0) > (existing.score || 0) && itemTime === existingTime)
+        ) {
+          byKey.set(key, item);
+        }
+      });
+      return [...byKey.values()];
+    };
+
+    if (detectedVendor) {
+      products = products.filter(p => productMatchesVendor(p, detectedVendor));
+    }
+
+    if (detectedVendor && remainingTokens.length) {
+      const strictTagStopWords = new Set([
+        "latest", "new", "arrival", "arrivals", "collection", "collections",
+        "product", "products", "dress", "dresses", "suit", "suits", "wear",
+        "show", "showing", "all", "best", "top"
+      ]);
+      const strictTagTerms = [
+        ...remainingTokens,
+        ...categoryTagTerms
+      ].filter(t => !strictTagStopWords.has(String(t || "").toLowerCase().trim()));
+      if (strictTagTerms.length) {
+        products = products.filter(p => productMatchesAnyTerm(p, strictTagTerms));
+      }
+    }
+
     function fuzzyFieldMatch(queryToken, text) {
       const words = (text || "")
         .toLowerCase()
@@ -1615,7 +2131,7 @@ collections searchableText tags colors status
     // await happens AFTER scoring — collection query is already in-flight
     // =========================
 
-    const rawCollectionIds = detectedVendor ? [] : [
+    const rawCollectionIds = (!includeCollections || detectedVendor || colorOnlySearch) ? [] : [
       ...new Set(
         products
           .flatMap(p => Array.isArray(p.collections) ? p.collections.map(id => String(id)) : [])
@@ -1631,6 +2147,10 @@ collections searchableText tags colors status
         .sort({ firstPublishedAt: -1, shopifyCreatedAt: -1 })
         .limit(20)
         .lean()
+      : !includeCollections
+      ? Promise.resolve([])
+      : colorOnlySearch
+      ? Promise.resolve([])
       : rawCollectionIds.length
         ? Collection.find({ store: cleanStore, collectionId: { $in: rawCollectionIds } })
           .sort({ shopifyCreatedAt: -1, firstPublishedAt: -1 })
@@ -2171,29 +2691,26 @@ collections searchableText tags colors status
     // =========================
 
     const defaultSort = searchSettings.defaultSort || "relevance";
+    const sortNewestFirst = (a, b) => {
+      const priorityDiff = (b.collectionPriority || 0) - (a.collectionPriority || 0);
+      if (priorityDiff !== 0) return priorityDiff;
+      if (!normalizedQuery.includes("rts")) {
+        const rtsDiff = Number(isRtsProduct(a)) - Number(isRtsProduct(b));
+        if (rtsDiff !== 0) return rtsDiff;
+      }
+      const timeDiff = (b.latestTime || 0) - (a.latestTime || 0);
+      if (timeDiff !== 0) return timeDiff;
+      return (b.score || 0) - (a.score || 0);
+    };
 
     if (isPureVendorSearch) {
 
-      products.sort((a, b) => {
-
-        const aTime = a.latestTime || 0;
-        const bTime = b.latestTime || 0;
-
-        if (bTime !== aTime) {
-          return bTime - aTime;
-        }
-
-        return (b.score || 0) - (a.score || 0);
-
-      });
+      products.sort(sortNewestFirst);
 
     } else if (defaultSort === "relevance") {
-      products.sort((a, b) => {
-        if (b.score !== a.score) return b.score - a.score;
-        return (b.latestTime || 0) - (a.latestTime || 0);
-      });
+      products.sort(sortNewestFirst);
     } else if (defaultSort === "newest") {
-      products.sort((a, b) => (b.latestTime || 0) - (a.latestTime || 0));
+      products.sort(sortNewestFirst);
     } else if (defaultSort === "oldest") {
       products.sort((a, b) => (a.latestTime || 0) - (b.latestTime || 0));
     } else if (defaultSort === "price_asc") {
@@ -2580,6 +3097,74 @@ collections searchableText tags colors status
       return Number(b.productsCount || 0) - Number(a.productsCount || 0);
     });
 
+    if (detectedVendor && collections.length) {
+      const latestVendorCollection = collections.find(c =>
+        c.collectionId &&
+        !isGarbageCollection(c.title) &&
+        normalizeVendorName(c.title) !== normalizeVendorName(detectedVendor) &&
+        (normalizedQuery.includes("rts") || !/\brts\b/i.test(c.title || ""))
+      );
+
+      if (latestVendorCollection) {
+        const plainCollectionId = normalizeId(latestVendorCollection.collectionId);
+        const collectionIds = [
+          plainCollectionId,
+          String(latestVendorCollection.collectionId),
+          `gid://shopify/Collection/${plainCollectionId}`
+        ];
+
+        let latestCollectionProducts = await Product.find({
+          store: cleanStore,
+          status: "ACTIVE",
+          vendor: { $regex: escapeRegex(detectedVendor), $options: "i" },
+          collections: { $in: collectionIds }
+        })
+          .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
+          .limit(80)
+          .lean()
+          .select(selectFields);
+
+        if (remainingTokens.length) {
+          const strictTagStopWords = new Set([
+            "latest", "new", "arrival", "arrivals", "collection", "collections",
+            "product", "products", "dress", "dresses", "suit", "suits", "wear",
+            "show", "showing", "all", "best", "top"
+          ]);
+          const strictTagTerms = [
+            ...remainingTokens,
+            ...categoryTagTerms
+          ].filter(t => !strictTagStopWords.has(String(t || "").toLowerCase().trim()));
+          if (strictTagTerms.length) {
+            latestCollectionProducts = latestCollectionProducts.filter(p =>
+              productMatchesAnyTerm(p, strictTagTerms)
+            );
+          }
+        }
+
+        latestCollectionProducts = latestCollectionProducts
+          .filter(p => normalizedQuery.includes("rts") || !isRtsProduct(p))
+          .map(p => {
+            const time = latestProductTime(p);
+            return {
+              ...p,
+              collectionPriority: 1,
+              latestCollectionTitle: latestVendorCollection.title || "",
+              latestTime: time,
+              latestDate: time ? new Date(time) : null,
+              score: (p.score || 0) + 250000
+            };
+          });
+
+        if (latestCollectionProducts.length) {
+          products = dedupeProducts([
+            ...latestCollectionProducts,
+            ...products
+          ]);
+          products.sort(sortNewestFirst);
+        }
+      }
+    }
+
     // =========================
     // HIDE RANDOM COLLECTIONS
     // =========================
@@ -2628,6 +3213,9 @@ collections searchableText tags colors status
             c.latestDate || null
 
         }));
+
+    products = dedupeProducts(products);
+    products.sort(sortNewestFirst);
 
     // Category-based collection filter: if collection title contains a category term, only keep it if query also contains that category (or its synonyms)
     // Avoid showing irrelevant collections for generic queries like "summer dress" → show only collections with "summer" in title, not all dress collections
@@ -2749,6 +3337,17 @@ ${p.productType || ""}
         colors: effectiveColors,
         maxPrice: effectiveMaxPrice,
         minPrice: effectiveMinPrice,
+        appliedFilters: {
+          vendor: normalizeParamList(requestedVendorFilter),
+          color: normalizeColorParamValues(requestedColorFilter),
+          size: normalizeParamList(requestedSizeFilter),
+          collection: normalizeParamList(requestedCollectionFilter),
+          productType: normalizeParamList(requestedProductTypeFilter),
+          availability: normalizeParamList(requestedAvailabilityFilter),
+          minPrice: requestedMinPrice ? Number(requestedMinPrice) : null,
+          maxPrice: requestedMaxPrice ? Number(requestedMaxPrice) : null,
+          tag: normalizeParamList(requestedTagFilter)
+        },
         detectedVendor,
         remainingQuery,
         totalProducts:
@@ -2761,7 +3360,7 @@ ${p.productType || ""}
         formattedCollections,
       products:
         products
-          .slice(0, 20),
+          .slice(0, 500),
       suggestions: aiSettings.suggestionsEnabled !== false
         ? buildSuggestions(aiExpansion, originalQuery)
         : []
@@ -2779,8 +3378,20 @@ ${p.productType || ""}
 
     console.log("TOTAL handler ms:", Date.now() - __reqStart);
 
-    res.json(payload);
+    const responsePayload = paginatePayload(payload);
+    responsePayload.products = (responsePayload.products || []).slice(0, pageLimit);
+    responsePayload.meta = {
+      ...(responsePayload.meta || {}),
+      returnedProducts: responsePayload.products.length,
+      enforcedLimit: pageLimit
+    };
+    if (responsePayload.meta.pagination) {
+      responsePayload.meta.pagination.returnedProducts = responsePayload.products.length;
+    }
+    res.json(responsePayload);
   } catch (err) {
+
+    console.error("SEARCH ERROR:", err);
 
     res.status(500).json({
       error: err.message
@@ -3033,9 +3644,9 @@ router.get("/trending-brands", async (req, res) => {
 
     // Build local product list from MongoDB first
     const localDbProducts = await Product.find({ store: cleanStore, status: 'ACTIVE' })
-      .sort({ shopifyCreatedAt: -1, firstPublishedAt: -1 })
+      .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
       .limit(400)
-      .select('vendor title handle image price shopifyCreatedAt firstPublishedAt shopifyPublishedAt productId')
+      .select('vendor title handle image price shopifyCreatedAt firstPublishedAt shopifyPublishedAt publishedAt productId')
       .lean();
 
     // Normalize local DB products to the same shape used below
@@ -3045,7 +3656,7 @@ router.get("/trending-brands", async (req, res) => {
       handle: p.handle || '',
       vendor: p.vendor || '',
       status: 'ACTIVE',
-      publishedAt: p.shopifyPublishedAt || p.firstPublishedAt || p.shopifyCreatedAt || null,
+      publishedAt: p.firstPublishedAt || p.shopifyPublishedAt || p.publishedAt || p.shopifyCreatedAt || null,
       createdAt: p.shopifyCreatedAt || p.firstPublishedAt || null,
       image: p.image || '',
       price: Number(p.price || 0),
@@ -3357,7 +3968,7 @@ router.get("/trending", async (req, res) => {
         status: "ACTIVE",
         ...(excludedProductIds.size && { productId: { $nin: Array.from(excludedProductIds) } })
       })
-        .sort({ shopifyCreatedAt: -1, firstPublishedAt: -1 })
+        .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
         .limit(500)
         .lean()
         .select(
@@ -3650,6 +4261,380 @@ router.get("/suggestions", async (req, res) => {
 
 const _norm = (s) => (s || "").replace(/^https?:\/\//, "").replace(/\/$/, "").trim().toLowerCase();
 
+const TYPO_SUGGESTION_CACHE_TTL = 1000 * 60 * 10;
+const typoSuggestionCache = {};
+
+const normalizeSuggestionText = (value) =>
+  String(value || "")
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .replace(/[^a-z0-9\s&]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const buildSearchUrl = (baseUrl, text) =>
+  `${String(baseUrl || "https://nainpreet.com").replace(/\/$/, "")}/search?q=${encodeURIComponent(text)}`;
+
+const cleanSuggestionTitle = (title) =>
+  normalizeSuggestionText(title)
+    .replace(/\brts\b/g, " ")
+    .replace(/\b20\d{2}\b/g, " ")
+    .replace(/\b\d{2}\b/g, " ")
+    .replace(/\b(drop|edit|vol|volume|chapter|collection|eid|summer|winter|spring|festive)\b/g, " ")
+    .replace(/\b[a-z]{1,2}\d+[a-z]?\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const SUGGESTION_STOP_PHRASES = [
+  /^new in\b/,
+  /^ready to ship\b/,
+  /^with\b/,
+  /^all\b/,
+  /^shop by\b/,
+  /\bin warehouse\b/,
+  /\brtw\d*\b/,
+  /\bready to ship\b/,
+  /\bnew arrivals?\b/,
+  /\bdefault title\b/,
+  /\badd ons?\b/,
+  /\bdo not delete\b/,
+  /\bsmart products filter\b/
+];
+
+const SUGGESTION_FABRICS = new Set([
+  "lawn", "chiffon", "organza", "silk", "raw silk", "cotton", "cambric",
+  "net", "velvet", "khaddar", "karandi", "jacquard", "tissue", "linen"
+]);
+
+const SUGGESTION_OCCASIONS = new Set([
+  "formal", "formals", "bridal", "festive", "party", "casual", "pret",
+  "luxury", "luxury pret", "unstitched", "stitched"
+]);
+
+const isCleanSuggestionPhrase = (text) => {
+  const clean = normalizeSuggestionText(text);
+  if (clean.length < 2 || clean.length > 55) return false;
+  if (/^\d+$/.test(clean)) return false;
+  if (SUGGESTION_STOP_PHRASES.some(re => re.test(clean))) return false;
+  const tokens = clean.split(/\s+/).filter(Boolean);
+  if (tokens.length > 6) return false;
+  if (tokens.some(t => t.length === 1 && !["a"].includes(t))) return false;
+  return true;
+};
+
+const suggestionCategoryRank = {
+  brand: 100,
+  latest: 92,
+  product: 88,
+  fabric: 84,
+  color: 80,
+  product_type: 76,
+  tag: 60
+};
+
+const suggestionTokenScore = (query, candidate) => {
+  const q = normalizeSuggestionText(query);
+  const c = normalizeSuggestionText(candidate);
+  if (!q || !c || c.length < 2) return 0;
+  if (q === c) return 100;
+  if (c.startsWith(q)) return 92;
+  if (c.includes(q)) return 84;
+  const qTokens = q.split(/\s+/).filter(Boolean);
+  const cTokens = c.split(/\s+/).filter(Boolean);
+  const tokenScores = qTokens.map(qt => {
+    let best = stringSimilarity.compareTwoStrings(qt, c);
+    cTokens.forEach(ct => {
+      if (ct.startsWith(qt)) best = Math.max(best, 0.90);
+      if (ct.includes(qt) || qt.includes(ct)) best = Math.max(best, 0.82);
+      best = Math.max(best, stringSimilarity.compareTwoStrings(qt, ct));
+    });
+    return best;
+  });
+  const avgToken = tokenScores.reduce((sum, n) => sum + n, 0) / Math.max(tokenScores.length, 1);
+  const phrase = stringSimilarity.compareTwoStrings(q, c);
+  return Math.round(Math.max(avgToken, phrase) * 100);
+};
+
+async function getTypoAiSuggestions({ query, candidates, modelName, apiKey }) {
+  if (!apiKey || !candidates.length) return [];
+  try {
+    const prompt = `You correct fuzzy fashion search queries for a Shopify Pakistani fashion store.
+Return ONLY a JSON array of 1-5 suggestion strings.
+Rules:
+- Suggestions must be selected from or closely based on DB candidates.
+- Do not invent brands/products/colors not present in candidates.
+- Prefer short searchable phrases.
+- If query already looks correct, return [].
+
+Query: "${query}"
+DB candidates:
+${candidates.slice(0, 30).map((c, i) => `${i + 1}. ${c.text}`).join("\n")}`;
+
+    const response = await Promise.race([
+      fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: modelName,
+          messages: [{ role: "user", content: prompt }],
+          max_tokens: 160,
+          temperature: 0
+        })
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Typo AI timeout")), 1600))
+    ]);
+    if (!response.ok) return [];
+    const json = await response.json();
+    const text = (json?.choices?.[0]?.message?.content || "").trim();
+    const match = text.match(/\[[\s\S]*?\]/);
+    if (!match) return [];
+    return JSON.parse(match[0])
+      .map(normalizeSuggestionText)
+      .filter(Boolean)
+      .slice(0, 5);
+  } catch (err) {
+    console.warn("[Typo Suggestions] AI skipped:", err.message);
+    return [];
+  }
+}
+
+router.get("/typo-suggestions", async (req, res) => {
+  try {
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    const shop = _norm(req.query.shop || req.query.store);
+    const query = normalizeSuggestionText(req.query.q || req.query.query);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 5, 1), 10);
+    const storefrontBase = req.query.domain || req.query.site || req.query.baseUrl || "https://nainpreet.com";
+    if (!shop || query.length < 2) {
+      return res.json({ success: true, enabled: true, query, suggestions: [] });
+    }
+
+    const settingsData = await getSearchSettings(shop);
+    const searchSettings = settingsData.searchSettings || {};
+    const aiSettings = settingsData.aiSettings || {};
+    const enabled = searchSettings.typoSuggestionsEnabled !== false;
+    if (!enabled) {
+      return res.json({ success: true, enabled: false, query, suggestions: [] });
+    }
+
+    const cacheKey = `${shop}|${query}|${limit}|${storefrontBase}|${searchSettings.typoSuggestionsAiEnabled !== false}`;
+    const cached = typoSuggestionCache[cacheKey];
+    if (cached && Date.now() - cached.timestamp < TYPO_SUGGESTION_CACHE_TTL) {
+      return res.json(cached.data);
+    }
+
+    const baseMatch = { store: shop, status: "ACTIVE" };
+    const queryRegex = new RegExp(escapeRegex(query), "i");
+    const [vendors, productTypes, colorDocs, tagDocs, recentProducts, matchingProducts] = await Promise.all([
+      Product.distinct("vendor", baseMatch),
+      Product.distinct("productType", baseMatch),
+      Product.aggregate([
+        { $match: baseMatch },
+        { $unwind: { path: "$colors", preserveNullAndEmptyArrays: false } },
+        { $group: { _id: "$colors", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 80 }
+      ]),
+      Product.aggregate([
+        { $match: baseMatch },
+        { $unwind: { path: "$tags", preserveNullAndEmptyArrays: false } },
+        { $group: { _id: "$tags", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 150 }
+      ]),
+      Product.find(baseMatch)
+        .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
+        .limit(250)
+        .select("title vendor productType tags colors")
+        .lean(),
+      Product.find({
+        ...baseMatch,
+        $or: [
+          { vendor: { $regex: queryRegex } },
+          { title: { $regex: queryRegex } },
+          { tags: { $regex: queryRegex } },
+          { searchableText: { $regex: queryRegex } }
+        ]
+      })
+        .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
+        .limit(200)
+        .select("title vendor productType tags colors")
+        .lean()
+    ]);
+
+    const candidates = new Map();
+    const addCandidate = (text, source, count = 1, category = source) => {
+      const clean = normalizeSuggestionText(text);
+      if (!isCleanSuggestionPhrase(clean)) return;
+      if (/^(new|all|sale|products?|collection|collections?)$/.test(clean)) return;
+      const score = suggestionTokenScore(query, clean);
+      if (score < 45) return;
+      const boostedScore = score + (suggestionCategoryRank[category] || 0);
+      const existing = candidates.get(clean);
+      if (!existing || boostedScore > existing.score) {
+        candidates.set(clean, { text: clean, source, category, score: boostedScore, matchScore: score, count });
+      }
+    };
+    const addProductSuggestionPhrases = (p) => {
+      const vendor = normalizeSuggestionText(p.vendor);
+      const title = cleanSuggestionTitle(p.title);
+      const productType = normalizeSuggestionText(p.productType);
+      const colors = (p.colors || []).map(normalizeSuggestionText).filter(Boolean);
+      const tagTokens = (p.tags || [])
+        .map(normalizeSuggestionText)
+        .filter(Boolean)
+        .flatMap(tag => tag.split(/\s*[-:]\s*/).map(normalizeSuggestionText))
+        .filter(Boolean);
+
+      if (vendor) {
+        addCandidate(vendor, "vendor", 8, "brand");
+        addCandidate(`latest ${vendor}`, "latest", 5, "latest");
+      }
+
+      if (title && suggestionTokenScore(query, title) >= 75) {
+        addCandidate(title, "product", 3, "product");
+      }
+
+      if (vendor && title && !title.includes(vendor) && suggestionTokenScore(query, title) >= 82) {
+        addCandidate(`${title} ${vendor}`, "product", 3, "product");
+      }
+
+      if (vendor && productType && isCleanSuggestionPhrase(productType)) {
+        addCandidate(`${vendor} ${productType}`, "product_type", 4, "product_type");
+      }
+
+      colors.slice(0, 3).forEach(color => {
+        if (vendor) addCandidate(`${vendor} ${color}`, "color", 3, "color");
+        addCandidate(`${color} ${productType || "dress"}`, "color", 2, "color");
+      });
+
+      tagTokens.slice(0, 25).forEach(tag => {
+        const cleanTag = tag
+          .replace(/\bnew in\b/g, " ")
+          .replace(/\brtw\d*\b/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+        if (!isCleanSuggestionPhrase(cleanTag)) return;
+        if (SUGGESTION_FABRICS.has(cleanTag)) {
+          addCandidate(cleanTag, "fabric", 2, "fabric");
+          if (vendor) addCandidate(`${vendor} ${cleanTag}`, "fabric", 5, "fabric");
+          addCandidate(`${cleanTag} ${productType || "dress"}`, "fabric", 2, "fabric");
+          return;
+        }
+        if (SUGGESTION_OCCASIONS.has(cleanTag)) {
+          addCandidate(cleanTag, "tag", 2, "tag");
+          if (vendor) addCandidate(`${vendor} ${cleanTag}`, "tag", 4, "tag");
+          return;
+        }
+      });
+    };
+
+    vendors.forEach(v => {
+      const vendor = normalizeSuggestionText(v);
+      addCandidate(vendor, "vendor", 3, "brand");
+      addCandidate(`latest ${vendor}`, "latest", 2, "latest");
+    });
+    productTypes.forEach(t => addCandidate(t, "product_type", 1, "product_type"));
+    colorDocs.forEach(c => addCandidate(c._id, "color", c.count || 1, "color"));
+    tagDocs.forEach(t => {
+      const tag = normalizeSuggestionText(t._id);
+      if (SUGGESTION_FABRICS.has(tag)) addCandidate(tag, "fabric", t.count || 1, "fabric");
+      else if (SUGGESTION_OCCASIONS.has(tag)) addCandidate(tag, "tag", t.count || 1, "tag");
+    });
+    matchingProducts.forEach(addProductSuggestionPhrases);
+    recentProducts.forEach(addProductSuggestionPhrases);
+
+    const rankedCandidates = [...candidates.values()]
+      .sort((a, b) => b.score - a.score || b.count - a.count)
+      .slice(0, 40);
+
+    const queryTokens = query.split(/\s+/).filter(Boolean);
+    const hasStrongAutocompleteMatch = rankedCandidates.some(c =>
+      c.score >= 90 &&
+      (
+        c.text.startsWith(query) ||
+        query.startsWith(c.text)
+      )
+    );
+    const shouldUseTypoAi =
+      queryTokens.length >= 2 &&
+      queryTokens.length <= 3 &&
+      query.length >= 6 &&
+      !hasStrongAutocompleteMatch;
+
+    const aiAllowed =
+      searchSettings.typoSuggestionsAiEnabled !== false &&
+      aiSettings.geminiEnabled !== false &&
+      Boolean(process.env.GROQ_API_KEY) &&
+      shouldUseTypoAi &&
+      rankedCandidates.length > 0;
+    const modelName = SAFE_EXPANSION_MODELS.has(aiSettings.geminiModel)
+      ? aiSettings.geminiModel
+      : AI_PRIMARY_MODEL;
+    const aiTexts = aiAllowed
+      ? await getTypoAiSuggestions({
+        query,
+        candidates: rankedCandidates,
+        modelName,
+        apiKey: process.env.GROQ_API_KEY
+      })
+      : [];
+
+    const byText = new Map(rankedCandidates.map(c => [c.text, c]));
+    const suggestions = [
+      ...aiTexts.map(text => ({
+        text,
+        type: "ai_typo",
+        score: byText.get(text)?.score || suggestionTokenScore(query, text),
+        source: byText.get(text)?.source || "ai",
+        category: byText.get(text)?.category || "ai"
+      })),
+      ...rankedCandidates.map(c => ({
+        text: c.text,
+        type: "db_typo",
+        score: c.score,
+        matchScore: c.matchScore,
+        source: c.source,
+        category: c.category,
+        count: c.count
+      }))
+    ]
+      .filter((item, index, arr) => arr.findIndex(x => x.text === item.text) === index)
+      .filter(item => item.text !== query)
+      .slice(0, limit)
+      .map(item => ({
+        ...item,
+        url: buildSearchUrl(storefrontBase, item.text)
+      }));
+
+    const payload = {
+      success: true,
+      enabled: true,
+      title: "Suggestions",
+      query,
+      aiUsed: aiTexts.length > 0,
+      mode: aiTexts.length > 0 ? "ai_refined" : "db_autocomplete",
+      aiSkippedReason: aiTexts.length > 0
+        ? null
+        : (!shouldUseTypoAi
+          ? (hasStrongAutocompleteMatch ? "strong_db_match" : "live_typing_or_single_word")
+          : "disabled_or_unavailable"),
+      suggestions,
+      groups: suggestions.reduce((acc, item) => {
+        const key = item.category || item.source || "other";
+        if (!acc[key]) acc[key] = [];
+        acc[key].push(item);
+        return acc;
+      }, {}),
+      links: suggestions.map(item => `[${item.text}](${item.url})`)
+    };
+    typoSuggestionCache[cacheKey] = { data: payload, timestamp: Date.now() };
+    res.json(payload);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 router.clearSettingsCache = (shop) => {
   delete settingsCache[_norm(shop)];
 };
@@ -3661,7 +4646,12 @@ router.clearTrendingCache = (shop) => {
 
 router.clearSearchCache = (shop) => {
   const s = _norm(shop);
-  Object.keys(searchCache).forEach(k => { if (k.startsWith(`${s}|`)) delete searchCache[k]; });
+  Object.keys(searchCache).forEach(k => {
+    if (k.startsWith(`${s}|`) || k.includes(`|${s}|`)) delete searchCache[k];
+  });
+  Object.keys(typoSuggestionCache).forEach(k => {
+    if (k.startsWith(`${s}|`)) delete typoSuggestionCache[k];
+  });
 };
 
 module.exports = router;

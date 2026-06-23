@@ -103,6 +103,11 @@ const productSchema =
       default: 0
     },
 
+    sizes: {
+      type: [String],
+      default: []
+    },
+
     // =========================
     // 🔥 SHOPIFY DATES
     // =========================
@@ -179,6 +184,7 @@ productSchema.pre("save", function (next) {
   ${(this.collections || []).join(" ")}
   ${(this.variantTitles || []).join(" ")}
   ${(this.colors || []).join(" ")}
+  ${(this.sizes || []).join(" ")}
 `.toLowerCase();
 
   next();
@@ -282,6 +288,32 @@ productSchema.index({
   stock: 1
 });
 
+productSchema.index({
+  store: 1,
+  sizes: 1
+});
+
+productSchema.index({
+  store: 1,
+  status: 1,
+  stock: 1,
+  firstPublishedAt: -1
+});
+
+productSchema.index({
+  store: 1,
+  status: 1,
+  sizes: 1,
+  firstPublishedAt: -1
+});
+
+productSchema.index({
+  store: 1,
+  status: 1,
+  colors: 1,
+  firstPublishedAt: -1
+});
+
 // ========================================
 // 🔥 COLLECTION INDEX
 // ========================================
@@ -289,6 +321,27 @@ productSchema.index({
 productSchema.index({
   store: 1,
   collections: 1
+});
+
+productSchema.index({
+  store: 1,
+  status: 1,
+  collections: 1,
+  firstPublishedAt: -1
+});
+
+productSchema.index({
+  store: 1,
+  status: 1,
+  productType: 1,
+  firstPublishedAt: -1
+});
+
+productSchema.index({
+  store: 1,
+  status: 1,
+  tags: 1,
+  firstPublishedAt: -1
 });
 
 // ========================================
