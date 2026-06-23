@@ -23,6 +23,10 @@ const aiInFlight = new Map(); // in-flight dedup: same query → share one AI ca
 const AI_PRIMARY_MODEL = "llama-3.3-70b-versatile";
 const AI_FALLBACK_MODEL = "llama-3.1-8b-instant";
 const AI_SEARCH_BLOCKING_BUDGET_MS = 120;
+const SEARCH_DEBUG = process.env.SEARCH_DEBUG === "true";
+const searchDebug = (...args) => {
+  if (SEARCH_DEBUG) console.log(...args);
+};
 const SAFE_EXPANSION_MODELS = new Set([
   "llama-3.3-70b-versatile",
   "llama-3.1-8b-instant"
@@ -85,7 +89,7 @@ async function _runAiExpansion(key, query, modelName, storeContext) {
   try {
     const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) { console.error("[AI] GROQ_API_KEY missing"); return null; }
-    console.log(`[AI] Expansion → model: ${modelName}, query: "${query}"`);
+    searchDebug(`[AI] Expansion -> model: ${modelName}, query: "${query}"`);
 
     const vendors = (storeContext.vendors || []).slice(0, 50);
     const productTypes = storeContext.productTypes || [];
@@ -715,7 +719,7 @@ const normalizeActiveFilterKey = (f) => ({
   category: "tag"
 }[f] || f);
 
-const getActiveFilterConfig = async (shop, filterSettings = {}) => {
+const getActiveFilterConfig = async (shop) => {
   const cached = filterConfigCache[shop];
   if (cached && Date.now() - cached.timestamp < FILTER_CONFIG_CACHE_TTL) return cached.data;
 
@@ -725,15 +729,13 @@ const getActiveFilterConfig = async (shop, filterSettings = {}) => {
     .maxTimeMS(1000);
 
   const usesCustomFilters = customFilters.length > 0;
-  const activeFilterKeys = usesCustomFilters
-    ? customFilters
-      .filter(filter =>
-        filter.status === "active" &&
-        filter.visibility === "visible" &&
-        filter.settings?.enabled !== false
-      )
-      .map(filter => normalizeActiveFilterKey(filter.filterType))
-    : (filterSettings.active || []).map(normalizeActiveFilterKey);
+  const activeFilterKeys = customFilters
+    .filter(filter =>
+      filter.status === "active" &&
+      filter.visibility === "visible" &&
+      filter.settings?.enabled !== false
+    )
+    .map(filter => normalizeActiveFilterKey(filter.filterType));
 
   const data = { usesCustomFilters, activeFilters: new Set(activeFilterKeys) };
   filterConfigCache[shop] = { data, timestamp: Date.now() };
@@ -746,43 +748,10 @@ const getActiveFilterConfig = async (shop, filterSettings = {}) => {
 
 const vendorCache = {};
 const searchCache = {};
-const collectionSearchCache = {};
 const SEARCH_CACHE_TTL = 1000 * 60;
 const SEARCH_CACHE_MAX = 500;
 const SEARCH_RANKING_VERSION = "filters-fast-cache-v2";
 const CACHE_TIME = 1000 * 60 * 2;
-const COLLECTION_SEARCH_CACHE_TTL = 1000 * 60 * 5;
-const COLLECTION_FETCH_BUDGET_MS = 80;
-
-const getCachedVendorCollections = async (shop, vendor) => {
-  const cleanVendor = String(vendor || "").trim();
-  if (!shop || !cleanVendor) return [];
-
-  const cacheKey = `${shop}|vendor|${normalizeVendorName(cleanVendor)}`;
-  const cached = collectionSearchCache[cacheKey];
-  if (cached && Date.now() - cached.timestamp < COLLECTION_SEARCH_CACHE_TTL) {
-    return cached.data;
-  }
-
-  const exactVendor = new RegExp(`^${escapeRegex(cleanVendor)}$`, "i");
-  const vendorText = new RegExp(escapeRegex(cleanVendor), "i");
-  const docs = await Collection.find({
-    store: shop,
-    $or: [
-      { vendor: exactVendor },
-      { title: vendorText },
-      { searchableText: vendorText }
-    ]
-  })
-    .sort({ firstPublishedAt: -1, shopifyCreatedAt: -1 })
-    .limit(20)
-    .select("collectionId title handle image description productsCount vendor shopifyCreatedAt shopifyPublishedAt firstPublishedAt searchableText")
-    .lean()
-    .maxTimeMS(250);
-
-  collectionSearchCache[cacheKey] = { data: docs, timestamp: Date.now() };
-  return docs;
-};
 
 // Trending routes cache — results change slowly, 3-min TTL is fine
 const trendingCache = {};
@@ -897,7 +866,7 @@ router.get("/search", async (req, res) => {
       perPage: requestedPerPage,
       per_page: requestedPerPageAlt
     } = req.query;
-    console.log(`[SEARCH] hit → shop:${shop} q:${q}`);
+    searchDebug(`[SEARCH] hit -> shop:${shop} q:${q}`);
 
     // =========================
     // 🔥 CLEAN INPUTS
@@ -1168,13 +1137,24 @@ router.get("/search", async (req, res) => {
       vendorCache[shop] &&
       Date.now() - vendorCache[shop].timestamp < CACHE_TIME;
 
-    const settingsData = await getSearchSettings(shop);
+    const [settingsData, customFilterConfig, synonymData, boosts, rawVendors] = await Promise.all([
+      getSearchSettings(shop),
+      getActiveFilterConfig(shop),
+      Synonym.findOne({ query: originalQuery, store: shop }).lean(),
+      Boost.find({ query: originalQuery, store: shop }).lean(),
+      vendorCacheHit
+        ? Promise.resolve(null)
+        : Product.distinct("vendor", { store: shop, status: "ACTIVE" })
+    ]);
     const searchSettings = settingsData.searchSettings || {};
     const searchOpts = settingsData.searchOptions || {};
     const aiSettings = settingsData.aiSettings || {};
     const filterSettings = settingsData.filters || {};
     const filtersEnabled = filterSettings.enabled !== false;
-    const { usesCustomFilters, activeFilters } = await getActiveFilterConfig(shop, filterSettings);
+    const { usesCustomFilters } = customFilterConfig;
+    const activeFilters = usesCustomFilters
+      ? customFilterConfig.activeFilters
+      : new Set((filterSettings.active || []).map(normalizeActiveFilterKey));
     const isFilterActive = (name) =>
       filtersEnabled && (usesCustomFilters ? activeFilters.has(name) : (activeFilters.size === 0 || activeFilters.has(name)));
     const hideOutOfStock = filtersEnabled && filterSettings.hideOutOfStock === true;
@@ -1208,21 +1188,13 @@ router.get("/search", async (req, res) => {
     // =========================
     // 🤖 AI CALL — settings loaded, fire with correct model + only if enabled
     // =========================
-    console.log(`[AI] ${shouldRunAiExpansion ? "Run" : "Skip"} -> aiEnabled:${aiEnabled} | key:${!!process.env.GROQ_API_KEY} | model:${aiModelName} | qLen:${originalQuery.length}`);
+    searchDebug(`[AI] ${shouldRunAiExpansion ? "Run" : "Skip"} -> aiEnabled:${aiEnabled} | key:${!!process.env.GROQ_API_KEY} | model:${aiModelName} | qLen:${originalQuery.length}`);
     if (!aiEnabled) console.warn("[AI] DISABLED — set geminiEnabled:true via PUT /api/admin/ai-settings");
 
     const storeCtx = vendorCacheHit ? { vendors: vendorCache[shop].data } : {};
     const aiExpansionPromise = shouldRunAiExpansion
       ? getAiExpansion(originalQuery, aiModelName, storeCtx)
       : Promise.resolve(null);
-
-    const [synonymData, boosts, rawVendors] = await Promise.all([
-      Synonym.findOne({ query: originalQuery, store: shop }),
-      Boost.find({ query: originalQuery, store: shop }),
-      vendorCacheHit
-        ? Promise.resolve(null)
-        : Product.distinct("vendor", { store: shop, status: "ACTIVE" })
-    ]);
 
     // =========================
     // 🔥 APPLY SYNONYM
@@ -1787,8 +1759,9 @@ router.get("/search", async (req, res) => {
     }
 
     if (detectedVendor) {
-      if (!requestedVendorFilter) {
-        productQuery.vendor = { $regex: escapeRegex(detectedVendor), $options: "i" };
+      if (!requestedVendorFilter || normalizeParamList(requestedVendorFilter).length === 1) {
+        // detectedVendor is the canonical value returned by Product.distinct().
+        productQuery.vendor = detectedVendor;
       }
 
       if (remainingQuery) {
@@ -1891,7 +1864,7 @@ collections searchableText tags colors sizes status
         .select(selectFields);
     }
 
-    console.log(
+    searchDebug(
       "DB find ms:", Date.now() - __dbStart,
       "| pre-find ms:", __dbStart - __reqStart
     );
@@ -1900,12 +1873,18 @@ collections searchableText tags colors sizes status
     // FALLBACK TYPO SEARCH
     // =========================
 
-    if (currentPage === 1 && products.length < 50 && detectedVendor && !hasRequestedFilters) {
+    if (
+      currentPage === 1 &&
+      products.length < 50 &&
+      detectedVendor &&
+      remainingQuery &&
+      !hasRequestedFilters
+    ) {
       const fallbackQuery = {
         store: cleanStore,
         status: "ACTIVE",
         ...userNarrowingQuery,
-        vendor: { $regex: escapeRegex(detectedVendor), $options: "i" }
+        vendor: detectedVendor
       };
 
       // Agar category search hai toh fallback mein bhi category filter lagao
@@ -2195,13 +2174,13 @@ collections searchableText tags colors sizes status
       )
     ];
 
-    const collectionFetchPromise = !includeCollections
+    const collectionFetchPromise = detectedVendor
+      ? Collection.find({ store: cleanStore, $text: { $search: detectedVendor } })
+        .sort({ firstPublishedAt: -1, shopifyCreatedAt: -1 })
+        .limit(20)
+        .lean()
+      : !includeCollections
       ? Promise.resolve([])
-      : detectedVendor
-      ? getCachedVendorCollections(cleanStore, detectedVendor).catch(err => {
-        console.warn("[Search] vendor collections skipped:", err.message);
-        return [];
-      })
       : colorOnlySearch
       ? Promise.resolve([])
       : rawCollectionIds.length
@@ -2937,11 +2916,8 @@ collections searchableText tags colors sizes status
     // collectionFetchPromise was launched before scoring — likely already resolved
     // =========================
     const __colStart = Date.now();
-    let collections = await Promise.race([
-      collectionFetchPromise,
-      new Promise(resolve => setTimeout(() => resolve([]), COLLECTION_FETCH_BUDGET_MS))
-    ]);
-    console.log("Collection fetch ms:", Date.now() - __colStart, "| total so far:", Date.now() - __reqStart);
+    let collections = await collectionFetchPromise;
+    searchDebug("Collection fetch ms:", Date.now() - __colStart, "| total so far:", Date.now() - __reqStart);
 
     // =========================
     // 🔥 SMART COLLECTIONS
@@ -3172,7 +3148,7 @@ collections searchableText tags colors sizes status
         let latestCollectionProducts = await Product.find({
           store: cleanStore,
           status: "ACTIVE",
-          vendor: { $regex: escapeRegex(detectedVendor), $options: "i" },
+          vendor: detectedVendor,
           collections: { $in: collectionIds }
         })
           .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
@@ -3432,7 +3408,7 @@ ${p.productType || ""}
     }
     searchCache[cacheKey] = { data: payload, timestamp: Date.now() };
 
-    console.log("TOTAL handler ms:", Date.now() - __reqStart);
+    searchDebug("TOTAL handler ms:", Date.now() - __reqStart);
 
     const responsePayload = paginatePayload(payload);
     responsePayload.products = (responsePayload.products || []).slice(0, pageLimit);
@@ -4705,9 +4681,6 @@ router.clearTrendingCache = (shop) => {
 router.clearSearchCache = (shop) => {
   const s = _norm(shop);
   delete filterConfigCache[s];
-  Object.keys(collectionSearchCache).forEach(k => {
-    if (k.startsWith(`${s}|`)) delete collectionSearchCache[k];
-  });
   Object.keys(searchCache).forEach(k => {
     if (k.startsWith(`${s}|`) || k.includes(`|${s}|`)) delete searchCache[k];
   });
