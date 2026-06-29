@@ -1873,13 +1873,7 @@ collections searchableText tags colors sizes status
     // FALLBACK TYPO SEARCH
     // =========================
 
-    if (
-      currentPage === 1 &&
-      products.length < 50 &&
-      detectedVendor &&
-      remainingQuery &&
-      !hasRequestedFilters
-    ) {
+    if (currentPage === 1 && products.length < 50 && detectedVendor && !hasRequestedFilters) {
       const fallbackQuery = {
         store: cleanStore,
         status: "ACTIVE",
@@ -4294,7 +4288,9 @@ router.get("/suggestions", async (req, res) => {
 const _norm = (s) => (s || "").replace(/^https?:\/\//, "").replace(/\/$/, "").trim().toLowerCase();
 
 const TYPO_SUGGESTION_CACHE_TTL = 1000 * 60 * 10;
+const TYPO_CORPUS_CACHE_TTL = 1000 * 60 * 10;
 const typoSuggestionCache = {};
+const typoCorpusCache = {};
 
 const normalizeSuggestionText = (value) =>
   String(value || "")
@@ -4387,6 +4383,55 @@ const suggestionTokenScore = (query, candidate) => {
   return Math.round(Math.max(avgToken, phrase) * 100);
 };
 
+const getTypoSuggestionCorpus = async (shop) => {
+  const cached = typoCorpusCache[shop];
+  if (cached && Date.now() - cached.timestamp < TYPO_CORPUS_CACHE_TTL) {
+    return cached.data;
+  }
+
+  const baseMatch = { store: shop, status: "ACTIVE" };
+  const hasFreshVendorCache =
+    vendorCache[shop] && Date.now() - vendorCache[shop].timestamp < CACHE_TIME;
+  const [rawVendors, recentProducts] = await Promise.all([
+    hasFreshVendorCache
+      ? Promise.resolve(vendorCache[shop].data)
+      : Product.distinct("vendor", baseMatch),
+    Product.find(baseMatch)
+      .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
+      .limit(300)
+      .select("title vendor productType tags colors")
+      .lean()
+  ]);
+
+  const vendors = (rawVendors || []).filter(Boolean);
+  if (!hasFreshVendorCache) {
+    vendorCache[shop] = { data: vendors, timestamp: Date.now() };
+  }
+
+  const productTypes = new Set();
+  const colorCounts = new Map();
+  const tagCounts = new Map();
+  recentProducts.forEach(product => {
+    if (product.productType) productTypes.add(product.productType);
+    (product.colors || []).forEach(color => {
+      colorCounts.set(color, (colorCounts.get(color) || 0) + 1);
+    });
+    (product.tags || []).forEach(tag => {
+      tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
+    });
+  });
+
+  const data = {
+    vendors,
+    productTypes: [...productTypes],
+    colorDocs: [...colorCounts].map(([value, count]) => ({ _id: value, count })),
+    tagDocs: [...tagCounts].map(([value, count]) => ({ _id: value, count })),
+    recentProducts
+  };
+  typoCorpusCache[shop] = { data, timestamp: Date.now() };
+  return data;
+};
+
 async function getTypoAiSuggestions({ query, candidates, modelName, apiKey }) {
   if (!apiKey || !candidates.length) return [];
   try {
@@ -4441,7 +4486,10 @@ router.get("/typo-suggestions", async (req, res) => {
       return res.json({ success: true, enabled: true, query, suggestions: [] });
     }
 
-    const settingsData = await getSearchSettings(shop);
+    const [settingsData, typoCorpus] = await Promise.all([
+      getSearchSettings(shop),
+      getTypoSuggestionCorpus(shop)
+    ]);
     const searchSettings = settingsData.searchSettings || {};
     const aiSettings = settingsData.aiSettings || {};
     const enabled = searchSettings.typoSuggestionsEnabled !== false;
@@ -4455,44 +4503,13 @@ router.get("/typo-suggestions", async (req, res) => {
       return res.json(cached.data);
     }
 
-    const baseMatch = { store: shop, status: "ACTIVE" };
-    const queryRegex = new RegExp(escapeRegex(query), "i");
-    const [vendors, productTypes, colorDocs, tagDocs, recentProducts, matchingProducts] = await Promise.all([
-      Product.distinct("vendor", baseMatch),
-      Product.distinct("productType", baseMatch),
-      Product.aggregate([
-        { $match: baseMatch },
-        { $unwind: { path: "$colors", preserveNullAndEmptyArrays: false } },
-        { $group: { _id: "$colors", count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        { $limit: 80 }
-      ]),
-      Product.aggregate([
-        { $match: baseMatch },
-        { $unwind: { path: "$tags", preserveNullAndEmptyArrays: false } },
-        { $group: { _id: "$tags", count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        { $limit: 150 }
-      ]),
-      Product.find(baseMatch)
-        .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
-        .limit(250)
-        .select("title vendor productType tags colors")
-        .lean(),
-      Product.find({
-        ...baseMatch,
-        $or: [
-          { vendor: { $regex: queryRegex } },
-          { title: { $regex: queryRegex } },
-          { tags: { $regex: queryRegex } },
-          { searchableText: { $regex: queryRegex } }
-        ]
-      })
-        .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
-        .limit(200)
-        .select("title vendor productType tags colors")
-        .lean()
-    ]);
+    const {
+      vendors,
+      productTypes,
+      colorDocs,
+      tagDocs,
+      recentProducts
+    } = typoCorpus;
 
     const candidates = new Map();
     const addCandidate = (text, source, count = 1, category = source) => {
@@ -4573,7 +4590,6 @@ router.get("/typo-suggestions", async (req, res) => {
       if (SUGGESTION_FABRICS.has(tag)) addCandidate(tag, "fabric", t.count || 1, "fabric");
       else if (SUGGESTION_OCCASIONS.has(tag)) addCandidate(tag, "tag", t.count || 1, "tag");
     });
-    matchingProducts.forEach(addProductSuggestionPhrases);
     recentProducts.forEach(addProductSuggestionPhrases);
 
     const rankedCandidates = [...candidates.values()]
@@ -4681,6 +4697,7 @@ router.clearTrendingCache = (shop) => {
 router.clearSearchCache = (shop) => {
   const s = _norm(shop);
   delete filterConfigCache[s];
+  delete typoCorpusCache[s];
   Object.keys(searchCache).forEach(k => {
     if (k.startsWith(`${s}|`) || k.includes(`|${s}|`)) delete searchCache[k];
   });
