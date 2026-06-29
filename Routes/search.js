@@ -567,9 +567,12 @@ const latestCollectionTime = (collection = {}) => {
   // shopifyCreatedAt: stable Shopify creation date (never changes)
   // firstPublishedAt: first publish date ($setOnInsert, never overwritten)
   // Neither changes on republish — both are safe signals
-  const created = toTime(collection.shopifyCreatedAt);
-  const firstPub = toTime(collection.firstPublishedAt);
-  return Math.max(created, firstPub) || created || firstPub;
+  return (
+    toTime(collection.shopifyPublishedAt) ||
+    toTime(collection.publishedAt) ||
+    toTime(collection.firstPublishedAt) ||
+    toTime(collection.shopifyCreatedAt)
+  );
 };
 
 const daysSinceTime = (time) =>
@@ -617,6 +620,8 @@ const GARBAGE_COLLECTION_PATTERNS = [
   /most[\s-]?sales[\s-]?products/i,
   /best[\s-]?seller[\s-]?products/i,
   /products[\s-]?showcase/i,
+  /^weight\s*\d+/i,
+  /^shop[\s-]?by[\s-]?mood$/i,
   /filter[\s-]?index/i,
   /^all[\s-]?products$/i,
   /^new[\s-]?arrivals$/i,
@@ -2157,7 +2162,7 @@ collections searchableText tags colors sizes status
     // await happens AFTER scoring — collection query is already in-flight
     // =========================
 
-    const rawCollectionIds = (!includeCollections || detectedVendor || colorOnlySearch) ? [] : [
+    const activeProductCollectionIds = [
       ...new Set(
         products
           .flatMap(p => Array.isArray(p.collections) ? p.collections.map(id => String(id)) : [])
@@ -2167,19 +2172,36 @@ collections searchableText tags colors sizes status
           })
       )
     ];
+    const rawCollectionIds = (!includeCollections || detectedVendor || colorOnlySearch) ? [] : activeProductCollectionIds;
 
     const collectionFetchPromise = detectedVendor
-      ? Collection.find({ store: cleanStore, $text: { $search: detectedVendor } })
-        .sort({ firstPublishedAt: -1, shopifyCreatedAt: -1 })
-        .limit(20)
-        .lean()
+      ? Promise.all([
+        activeProductCollectionIds.length
+          ? Collection.find({ store: cleanStore, collectionId: { $in: activeProductCollectionIds } })
+            .sort({ shopifyPublishedAt: -1, firstPublishedAt: -1, shopifyCreatedAt: -1 })
+            .limit(80)
+            .lean()
+          : Promise.resolve([]),
+        Collection.find({ store: cleanStore, $text: { $search: detectedVendor } })
+          .sort({ shopifyPublishedAt: -1, firstPublishedAt: -1, shopifyCreatedAt: -1 })
+          .limit(20)
+          .lean()
+      ]).then(([activeCollections, textCollections]) => {
+        const byId = new Map();
+        [...activeCollections, ...textCollections].forEach(c => {
+          const key = normalizeId(c.collectionId) || `${c.title || ""}|${c.handle || ""}`;
+          if (!key || byId.has(key)) return;
+          byId.set(key, c);
+        });
+        return [...byId.values()];
+      })
       : !includeCollections
       ? Promise.resolve([])
       : colorOnlySearch
       ? Promise.resolve([])
       : rawCollectionIds.length
         ? Collection.find({ store: cleanStore, collectionId: { $in: rawCollectionIds } })
-          .sort({ shopifyCreatedAt: -1, firstPublishedAt: -1 })
+          .sort({ shopifyPublishedAt: -1, firstPublishedAt: -1, shopifyCreatedAt: -1 })
           .limit(50)
           .lean()
         : Promise.resolve([]);
@@ -2959,10 +2981,16 @@ collections searchableText tags colors sizes status
         const title = (c.title || "").toLowerCase();
 
         const titleVendorMatch =
-          detectedVendor ? title.includes(detectedVendor.toLowerCase()) : false;
+          detectedVendor ? normalizeVendorName(title).includes(normalizeVendorName(detectedVendor)) : false;
+        const activeVendorCollection =
+          detectedVendor && relatedProducts.some(p => productMatchesVendor(p, detectedVendor));
 
         if (titleVendorMatch) {
           collectionScore += 60000;
+        }
+
+        if (activeVendorCollection) {
+          collectionScore += 80000;
         }
 
         if (detectedVendor) {
@@ -3077,6 +3105,7 @@ collections searchableText tags colors sizes status
           ...c,
 
           titleVendorMatch,
+          activeVendorCollection,
 
           // latestDate / latestTime = collection ki APNI date (product se polluted nahi)
           latestDate:
@@ -3097,7 +3126,7 @@ collections searchableText tags colors sizes status
 
     // brand detect hua to sirf brand-named collections rakho
     if (detectedVendor) {
-      const brandCollections = collections.filter(c => c.titleVendorMatch);
+      const brandCollections = collections.filter(c => c.titleVendorMatch || c.activeVendorCollection);
       if (brandCollections.length) {
         collections = brandCollections;
       }
@@ -3105,6 +3134,11 @@ collections searchableText tags colors sizes status
 
 
     collections.sort((a, b) => {
+      // active vendor product relation is stronger than a text-only brand match
+      if (a.activeVendorCollection !== b.activeVendorCollection) {
+        return a.activeVendorCollection ? -1 : 1;
+      }
+
       // brand-named collections sabse pehle
       if (a.titleVendorMatch !== b.titleVendorMatch) {
         return a.titleVendorMatch ? -1 : 1;
@@ -4095,7 +4129,7 @@ router.get("/trending", async (req, res) => {
 
 router.get("/trending-collections", async (req, res) => {
   try {
-    const { store, shop } = req.query;
+    const { store, shop, q, vendor, brand } = req.query;
     const rawStore = store || shop;
 
     if (!rawStore) {
@@ -4103,6 +4137,7 @@ router.get("/trending-collections", async (req, res) => {
     }
 
     const cleanStore = normalizeDomain(rawStore);
+    const brandQuery = normalizeVendorName(vendor || brand || q || "");
 
     // =========================
     // SETTING CHECK — default OFF, admin must explicitly enable
@@ -4115,7 +4150,7 @@ router.get("/trending-collections", async (req, res) => {
     // =========================
     // TRENDING COLLECTIONS CACHE
     // =========================
-    const tcCacheKey = `trending-collections|${cleanStore}`;
+    const tcCacheKey = `trending-collections|${cleanStore}|${brandQuery}`;
     const tcCached = trendingCache[tcCacheKey];
     if (tcCached && Date.now() - tcCached.timestamp < TRENDING_CACHE_TTL) {
       return res.json(tcCached.data);
@@ -4135,6 +4170,59 @@ router.get("/trending-collections", async (req, res) => {
 
     const pinnedCollectionIds = trendingSettings?.pinnedCollectionIds || [];
 
+    if (brandQuery) {
+      const rawVendors = await Product.distinct("vendor", {
+        store: cleanStore,
+        status: "ACTIVE"
+      });
+      const detectedBrand = (rawVendors || []).find(v => {
+        const normalizedVendor = normalizeVendorName(v);
+        return normalizedVendor === brandQuery ||
+          normalizedVendor.includes(brandQuery) ||
+          brandQuery.includes(normalizedVendor);
+      });
+
+      if (detectedBrand) {
+        const brandProducts = await Product.find({
+          store: cleanStore,
+          status: "ACTIVE",
+          vendor: detectedBrand
+        })
+          .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
+          .limit(300)
+          .select("collections")
+          .lean();
+
+        const collectionIds = [
+          ...new Set(
+            brandProducts
+              .flatMap(p => Array.isArray(p.collections) ? p.collections.map(id => String(id)) : [])
+              .flatMap(id => {
+                const plain = normalizeId(id);
+                return [plain, `gid://shopify/Collection/${plain}`].filter(Boolean);
+              })
+          )
+        ];
+
+        if (collectionIds.length) {
+          const brandCollections = await Collection.find({
+            store: cleanStore,
+            collectionId: { $in: collectionIds }
+          }).lean();
+
+          const formattedBrandCollections = brandCollections
+            .filter(c => c.handle && c.title && c.title.trim() && c.title !== ".")
+            .sort((a, b) => latestCollectionTime(b) - latestCollectionTime(a))
+            .slice(0, 10)
+            .map(c => ({ title: c.title, handle: c.handle, image: c.image || "" }));
+
+          const tcPayload = { collections: formattedBrandCollections };
+          trendingCache[`trending-collections|${cleanStore}|${brandQuery}`] = { data: tcPayload, timestamp: Date.now() };
+          return res.json(tcPayload);
+        }
+      }
+    }
+
     // =========================
     // PARALLEL: pinned + dynamic collections (independent)
     // =========================
@@ -4151,7 +4239,7 @@ router.get("/trending-collections", async (req, res) => {
           collectionId: { $nin: pinnedCollectionIds.map(String) }
         })
       })
-        .sort({ shopifyCreatedAt: -1, firstPublishedAt: -1 })
+        .sort({ shopifyPublishedAt: -1, firstPublishedAt: -1, shopifyCreatedAt: -1 })
         .limit(20)
         .lean()
     ]);
@@ -4161,6 +4249,7 @@ router.get("/trending-collections", async (req, res) => {
     const formattedCollections =
       allCollections
         .filter(c => c.handle && c.title && c.title.trim() && c.title !== ".")
+        .sort((a, b) => latestCollectionTime(b) - latestCollectionTime(a))
         .slice(0, 10)
         .map(c => ({ title: c.title, handle: c.handle, image: c.image || "" }));
 

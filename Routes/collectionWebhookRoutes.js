@@ -4,6 +4,9 @@ const router = express.Router();
 const Collection =
   require("../Models/collectionModel");
 
+const searchRoute =
+  require("./search");
+
 const verifyShopifyWebhook =
   require("../middleware/verifyShopifyWebhook");
 
@@ -72,6 +75,15 @@ router.post(
               ? new Date(data.published_at)
               : null,
 
+          firstPublishedAt:
+            data.published_at
+              ? new Date(data.published_at)
+              : (
+                data.created_at
+                  ? new Date(data.created_at)
+                  : null
+              ),
+
           searchableText: `
             ${data.title || ""}
             ${data.handle || ""}
@@ -85,6 +97,9 @@ router.post(
           new: true
         }
       );
+
+      searchRoute.clearSearchCache?.(shop);
+      searchRoute.clearTrendingCache?.(shop);
 
       console.log(
         "✅ COLLECTION CREATED:",
@@ -174,6 +189,15 @@ router.post(
               ? new Date(data.published_at)
               : null,
 
+          firstPublishedAt:
+            data.published_at
+              ? new Date(data.published_at)
+              : (
+                data.created_at
+                  ? new Date(data.created_at)
+                  : null
+              ),
+
           searchableText: `
             ${data.title || ""}
             ${data.handle || ""}
@@ -187,6 +211,9 @@ router.post(
           new: true
         }
       );
+
+      searchRoute.clearSearchCache?.(shop);
+      searchRoute.clearTrendingCache?.(shop);
 
       console.log(
         "♻️ COLLECTION UPDATED:",
@@ -239,6 +266,9 @@ router.post(
 
         store: shop
       });
+
+      searchRoute.clearSearchCache?.(shop);
+      searchRoute.clearTrendingCache?.(shop);
 
       console.log(
         "🗑 COLLECTION DELETED:",

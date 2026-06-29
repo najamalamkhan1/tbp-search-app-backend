@@ -70,7 +70,10 @@ const registerWebhooks = async (shop, accessToken, baseUrl) => {
     const topics = [
         "products/create",
         "products/update",
-        "products/delete"
+        "products/delete",
+        "collections/create",
+        "collections/update",
+        "collections/delete"
     ];
 
     for (const topic of topics) {

@@ -1106,11 +1106,6 @@ router.post("/sync-collections", async (req, res) => {
                             )
                             : null,
 
-                        searchableText
-
-                      },
-                      $setOnInsert: {
-
                         firstPublishedAt:
                           c.published_at
                             ? new Date(c.published_at)
@@ -1118,7 +1113,9 @@ router.post("/sync-collections", async (req, res) => {
                               c.created_at
                                 ? new Date(c.created_at)
                                 : null
-                            )
+                            ),
+
+                        searchableText
 
                       }
 
