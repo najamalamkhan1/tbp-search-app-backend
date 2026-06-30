@@ -84,7 +84,8 @@ db.once('connected', async () => {
       [{ store: 1, status: 1, sizes: 1, firstPublishedAt: -1 }, { name: 'fast_size_search' }],
       [{ store: 1, status: 1, collections: 1, firstPublishedAt: -1 }, { name: 'fast_collection_search' }],
       [{ store: 1, status: 1, productType: 1, firstPublishedAt: -1 }, { name: 'fast_product_type_search' }],
-      [{ store: 1, status: 1, tags: 1, firstPublishedAt: -1 }, { name: 'fast_tag_search' }]
+      [{ store: 1, status: 1, tags: 1, firstPublishedAt: -1 }, { name: 'fast_tag_search' }],
+      [{ store: 1, status: 1, vendor: 1, firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 }, { name: 'fast_vendor_newest' }]
     ];
     for (const [keys, options] of fastIndexes) {
       if (!indexes.find(i => i.name === options.name)) {

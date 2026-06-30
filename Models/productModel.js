@@ -356,6 +356,18 @@ productSchema.index({
   shopifyCreatedAt: -1
 });
 
+productSchema.index({
+  store: 1,
+  status: 1,
+  vendor: 1,
+  firstPublishedAt: -1,
+  shopifyPublishedAt: -1,
+  publishedAt: -1,
+  shopifyCreatedAt: -1
+}, {
+  name: "fast_vendor_newest"
+});
+
 // ========================================
 // 🔥 EXPORT
 // ========================================

@@ -1128,7 +1128,7 @@ router.get("/search", async (req, res) => {
     };
 
     // Cache by query + filters so filtered result sets do not leak into each other.
-    const cacheKey = `${SEARCH_RANKING_VERSION}|${cleanStore}|${originalQuery}|${JSON.stringify(filterStateForCache)}`;
+    const cacheKey = `${SEARCH_RANKING_VERSION}|${cleanStore}|${originalQuery}|page:${currentPage}|limit:${pageLimit}|collections:${includeCollections ? 1 : 0}|${JSON.stringify(filterStateForCache)}`;
     const cachedSearch = searchCache[cacheKey];
     if (cachedSearch && Date.now() - cachedSearch.timestamp < SEARCH_CACHE_TTL) {
       return res.json(paginatePayload(cachedSearch.data));
@@ -1513,6 +1513,162 @@ router.get("/search", async (req, res) => {
           .join(" ")
           .trim();
 
+    }
+
+    const onlyVendorFilterRequested = Boolean(requestedVendorFilter) &&
+      !requestedMinPrice &&
+      !requestedMaxPrice &&
+      !requestedColorFilter &&
+      !requestedTagFilter &&
+      !requestedCollectionFilter &&
+      !requestedSizeFilter &&
+      !requestedProductTypeFilter &&
+      !requestedAvailabilityFilter;
+
+    const pureVendorFastPath =
+      detectedVendor &&
+      !remainingQuery &&
+      (!hasRequestedFilters || onlyVendorFilterRequested);
+
+    if (pureVendorFastPath) {
+      const fastSelectFields = `
+        productId title handle vendor image price stock productType
+        shopifyCreatedAt shopifyPublishedAt publishedAt firstPublishedAt
+        collections tags colors sizes status
+      `;
+      const fastFetchLimit = Math.min(pageOffset + pageLimit + 1, 240);
+
+      const fastProductsRaw = await Product.find({
+        store: cleanStore,
+        status: "ACTIVE",
+        vendor: detectedVendor
+      })
+        .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
+        .limit(fastFetchLimit)
+        .lean()
+        .select(fastSelectFields);
+
+      const fastHasNextPage = fastProductsRaw.length > pageOffset + pageLimit;
+      const fastProducts = fastProductsRaw.slice(0, pageOffset + pageLimit);
+      const fastReturnedWindow = Math.max(Math.min(fastProductsRaw.length - pageOffset, pageLimit), 0);
+      const totalVendorProducts = pageOffset + fastReturnedWindow + (fastHasNextPage ? 1 : 0);
+
+      const fastCollectionIds = [
+        ...new Set(
+          fastProducts
+            .flatMap(p => Array.isArray(p.collections) ? p.collections.map(id => String(id)) : [])
+            .flatMap(id => {
+              const plain = normalizeId(id);
+              return [plain, `gid://shopify/Collection/${plain}`].filter(Boolean);
+            })
+        )
+      ];
+
+      const fastCollections = fastCollectionIds.length
+        ? await Collection.find({
+          store: cleanStore,
+          collectionId: { $in: fastCollectionIds }
+        })
+          .sort({ shopifyPublishedAt: -1, firstPublishedAt: -1, shopifyCreatedAt: -1 })
+          .limit(40)
+          .lean()
+        : [];
+
+      const formattedFastCollections = fastCollections
+        .filter(c => c.title && !isGarbageCollection(c.title))
+        .filter(c => normalizedQuery.includes("rts") || !/\brts\b/i.test(c.title || ""))
+        .sort((a, b) => latestCollectionTime(b) - latestCollectionTime(a))
+        .slice(0, 10)
+        .map(c => ({
+          title: c.title || "",
+          handle: c.handle || "",
+          image: c.image || "",
+          type: "collection",
+          score: recencyScore(latestCollectionTime(c), {
+            day1: 100000,
+            day3: 75000,
+            day7: 50000,
+            day30: 25000,
+            day90: 8000,
+            day180: 2000
+          }),
+          latestDate: latestCollectionTime(c) ? new Date(latestCollectionTime(c)) : null
+        }));
+
+      const fastProductsWithMeta = fastProducts.map(p => {
+        const productTime = latestProductTime(p);
+        return {
+          ...p,
+          latestTime: productTime,
+          latestDate: productTime ? new Date(productTime) : null,
+          score: recencyScore(productTime, {
+            day1: 55000,
+            day3: 42000,
+            day7: 30000,
+            day30: 15000,
+            day90: 5000,
+            day180: 1000
+          })
+        };
+      });
+
+      const fastPayload = {
+        query: q,
+        meta: {
+          originalQuery,
+          finalQuery,
+          fastVendorPath: true,
+          detectedVendor,
+          remainingQuery,
+          totalProducts: totalVendorProducts,
+          appliedFilters: {
+            vendor: normalizeParamList(requestedVendorFilter),
+            color: [],
+            size: [],
+            collection: [],
+            productType: [],
+            availability: [],
+            minPrice: null,
+            maxPrice: null,
+            tag: []
+          },
+          availableCategories: {
+            formals: false,
+            casuals: false,
+            luxuryPret: false,
+            coordSet: false,
+            luxury: false
+          }
+        },
+        vendors: [
+          {
+            title: detectedVendor,
+            type: "vendor",
+            score: 999999,
+            latestDate: fastProductsWithMeta[0]?.latestDate || new Date()
+          }
+        ],
+        collections: formattedFastCollections,
+        products: fastProductsWithMeta,
+        suggestions: []
+      };
+
+      searchCache[cacheKey] = { data: fastPayload, timestamp: Date.now() };
+      const responsePayload = paginatePayload(fastPayload);
+      responsePayload.products = (responsePayload.products || []).slice(0, pageLimit);
+      responsePayload.meta = {
+        ...(responsePayload.meta || {}),
+        returnedProducts: responsePayload.products.length,
+        enforcedLimit: pageLimit
+      };
+      if (responsePayload.meta.pagination) {
+        responsePayload.meta.pagination.totalProducts = totalVendorProducts;
+        responsePayload.meta.pagination.totalPages = fastHasNextPage ? currentPage + 1 : currentPage;
+        responsePayload.meta.pagination.hasNextPage = fastHasNextPage;
+        responsePayload.meta.pagination.nextPage = fastHasNextPage ? currentPage + 1 : null;
+        responsePayload.meta.pagination.returnedProducts = responsePayload.products.length;
+      }
+      return res.json(responsePayload);
     }
 
     // Code For Tags typo Tolerance
