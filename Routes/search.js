@@ -622,6 +622,10 @@ const GARBAGE_COLLECTION_PATTERNS = [
   /products[\s-]?showcase/i,
   /^weight\s*\d+/i,
   /^shop[\s-]?by[\s-]?mood$/i,
+  /^shop[\s-]?by$/i,
+  /^brands?\s*a\s*to\s*z$/i,
+  /^designers?$/i,
+  /^over\b/i,
   /filter[\s-]?index/i,
   /^all[\s-]?products$/i,
   /^new[\s-]?arrivals$/i,
@@ -634,6 +638,9 @@ const isGarbageCollection = (title) => {
   if (t.length < 3) return true;
   return GARBAGE_COLLECTION_PATTERNS.some(p => p.test(t));
 };
+
+const isRtsCollection = (collection = {}) =>
+  /\brts\b|ready\s*to\s*ship/i.test(`${collection.title || ""} ${collection.handle || ""}`);
 
 const GARBAGE_VENDOR_PATTERNS = [
   /^add[\s-]?ons?$/i,
@@ -755,7 +762,7 @@ const vendorCache = {};
 const searchCache = {};
 const SEARCH_CACHE_TTL = 1000 * 60;
 const SEARCH_CACHE_MAX = 500;
-const SEARCH_RANKING_VERSION = "filters-fast-cache-v2";
+const SEARCH_RANKING_VERSION = "filters-fast-cache-v3";
 const CACHE_TIME = 1000 * 60 * 2;
 
 // Trending routes cache — results change slowly, 3-min TTL is fine
@@ -1564,38 +1571,133 @@ router.get("/search", async (req, res) => {
         )
       ];
 
-      const fastCollections = fastCollectionIds.length
-        ? await Collection.find({
-          store: cleanStore,
-          collectionId: { $in: fastCollectionIds }
-        })
+      const [fastActiveCollections, fastTextCollections] = await Promise.all([
+        fastCollectionIds.length
+          ? Collection.find({
+            store: cleanStore,
+            collectionId: { $in: fastCollectionIds }
+          })
+            .sort({ shopifyPublishedAt: -1, firstPublishedAt: -1, shopifyCreatedAt: -1 })
+            .limit(80)
+            .lean()
+          : Promise.resolve([]),
+        Collection.find({ store: cleanStore, $text: { $search: detectedVendor } })
           .sort({ shopifyPublishedAt: -1, firstPublishedAt: -1, shopifyCreatedAt: -1 })
-          .limit(40)
+          .limit(20)
           .lean()
-        : [];
+      ]);
 
-      const formattedFastCollections = fastCollections
+      const fastCollectionsById = new Map();
+      [...fastActiveCollections, ...fastTextCollections].forEach(c => {
+        const key = normalizeId(c.collectionId) || `${c.title || ""}|${c.handle || ""}`;
+        if (!key || fastCollectionsById.has(key)) return;
+        fastCollectionsById.set(key, c);
+      });
+      const fastCollections = [...fastCollectionsById.values()];
+
+      const fastCollectionCandidates = fastCollections
+        .map(c => {
+          const relatedProducts = fastProducts.filter(p =>
+            Array.isArray(p.collections) &&
+            p.collections.some(id => normalizeId(id) === normalizeId(c.collectionId))
+          );
+          const titleVendorMatch = normalizeVendorName(c.title).includes(normalizeVendorName(detectedVendor));
+          const activeVendorCollection = relatedProducts.some(p => {
+            const productVendor = normalizeVendorName(p.vendor);
+            const targetVendor = normalizeVendorName(detectedVendor);
+            return productVendor === targetVendor ||
+              productVendor.includes(targetVendor) ||
+              targetVendor.includes(productVendor);
+          });
+          const collectionTime = latestCollectionTime(c);
+          return {
+            ...c,
+            titleVendorMatch,
+            activeVendorCollection,
+            latestTime: collectionTime,
+            latestDate: collectionTime ? new Date(collectionTime) : null,
+            score:
+              (titleVendorMatch ? 60000 : 0) +
+              (activeVendorCollection ? 80000 : 0) +
+              recencyScore(collectionTime, {
+                day1: 100000,
+                day3: 75000,
+                day7: 50000,
+                day30: 25000,
+                day90: 8000,
+                day180: 2000
+              }) +
+              Math.min(Number(c.productsCount || 0) * 250, 12000)
+          };
+        })
         .filter(c => c.title && !isGarbageCollection(c.title))
-        .filter(c => normalizedQuery.includes("rts") || !/\brts\b/i.test(c.title || ""))
-        .sort((a, b) => latestCollectionTime(b) - latestCollectionTime(a))
+        .filter(c => normalizedQuery.includes("rts") || !isRtsCollection(c));
+
+      const fastBrandCollections = fastCollectionCandidates.filter(c => c.titleVendorMatch || c.activeVendorCollection);
+      const fastDisplayCollections = (fastBrandCollections.length ? fastBrandCollections : fastCollectionCandidates)
+        .sort((a, b) => {
+          if (a.activeVendorCollection !== b.activeVendorCollection) {
+            return a.activeVendorCollection ? -1 : 1;
+          }
+          if (a.titleVendorMatch !== b.titleVendorMatch) {
+            return a.titleVendorMatch ? -1 : 1;
+          }
+          if ((b.latestTime || 0) !== (a.latestTime || 0)) {
+            return (b.latestTime || 0) - (a.latestTime || 0);
+          }
+          return (b.score || 0) - (a.score || 0);
+        });
+
+      const latestFastCollection = fastDisplayCollections.find(c =>
+        normalizeVendorName(c.title) !== normalizeVendorName(detectedVendor)
+      );
+
+      let latestFastCollectionProducts = [];
+      if (latestFastCollection?.collectionId) {
+        const plainCollectionId = normalizeId(latestFastCollection.collectionId);
+        const latestCollectionIds = [
+          plainCollectionId,
+          String(latestFastCollection.collectionId),
+          `gid://shopify/Collection/${plainCollectionId}`
+        ].filter(Boolean);
+
+        latestFastCollectionProducts = await Product.find({
+          store: cleanStore,
+          status: "ACTIVE",
+          vendor: detectedVendor,
+          collections: { $in: latestCollectionIds }
+        })
+          .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
+          .limit(80)
+          .lean()
+          .select(fastSelectFields);
+      }
+
+      const formattedFastCollections = fastDisplayCollections
         .slice(0, 10)
         .map(c => ({
           title: c.title || "",
           handle: c.handle || "",
           image: c.image || "",
           type: "collection",
-          score: recencyScore(latestCollectionTime(c), {
-            day1: 100000,
-            day3: 75000,
-            day7: 50000,
-            day30: 25000,
-            day90: 8000,
-            day180: 2000
-          }),
-          latestDate: latestCollectionTime(c) ? new Date(latestCollectionTime(c)) : null
+          score: c.score || 0,
+          latestDate: c.latestDate || null
         }));
 
-      const fastProductsWithMeta = fastProducts.map(p => {
+      const fastProductKey = (product) =>
+        String(product.productId || product.id || product.handle || `${product.vendor || ""}|${product.title || ""}`).toLowerCase();
+      const fastProductMap = new Map();
+      [...latestFastCollectionProducts, ...fastProducts].forEach((product, index) => {
+        const key = fastProductKey(product);
+        if (!key || fastProductMap.has(key)) return;
+        fastProductMap.set(key, {
+          ...product,
+          collectionPriority: index < latestFastCollectionProducts.length ? 1 : 0,
+          latestCollectionTitle: index < latestFastCollectionProducts.length ? latestFastCollection.title || "" : product.latestCollectionTitle
+        });
+      });
+
+      const fastProductsWithMeta = [...fastProductMap.values()].map(p => {
         const productTime = latestProductTime(p);
         return {
           ...p,
@@ -1610,6 +1712,10 @@ router.get("/search", async (req, res) => {
             day180: 1000
           })
         };
+      }).sort((a, b) => {
+        const priorityDiff = (b.collectionPriority || 0) - (a.collectionPriority || 0);
+        if (priorityDiff !== 0) return priorityDiff;
+        return (b.latestTime || 0) - (a.latestTime || 0);
       });
 
       const fastPayload = {
@@ -3318,7 +3424,7 @@ collections searchableText tags colors sizes status
         c.collectionId &&
         !isGarbageCollection(c.title) &&
         normalizeVendorName(c.title) !== normalizeVendorName(detectedVendor) &&
-        (normalizedQuery.includes("rts") || !/\brts\b/i.test(c.title || ""))
+        (normalizedQuery.includes("rts") || !isRtsCollection(c))
       );
 
       if (latestVendorCollection) {
@@ -3401,10 +3507,7 @@ collections searchableText tags colors sizes status
         .filter(c => !isGarbageCollection(c.title))
         .filter(c => {
           // Hide RTS collections unless user explicitly searched for "rts"
-          if (
-            !normalizedQuery.includes("rts") &&
-            /\brts\b/i.test(c.title)
-          ) return false;
+          if (!normalizedQuery.includes("rts") && isRtsCollection(c)) return false;
           return true;
         })
         .slice(0, 10)
@@ -4368,6 +4471,7 @@ router.get("/trending-collections", async (req, res) => {
 
           const formattedBrandCollections = brandCollections
             .filter(c => c.handle && c.title && c.title.trim() && c.title !== ".")
+            .filter(c => brandQuery.includes("rts") || !isRtsCollection(c))
             .sort((a, b) => latestCollectionTime(b) - latestCollectionTime(a))
             .slice(0, 10)
             .map(c => ({ title: c.title, handle: c.handle, image: c.image || "" }));
@@ -4405,6 +4509,7 @@ router.get("/trending-collections", async (req, res) => {
     const formattedCollections =
       allCollections
         .filter(c => c.handle && c.title && c.title.trim() && c.title !== ".")
+        .filter(c => brandQuery.includes("rts") || !isRtsCollection(c))
         .sort((a, b) => latestCollectionTime(b) - latestCollectionTime(a))
         .slice(0, 10)
         .map(c => ({ title: c.title, handle: c.handle, image: c.image || "" }));
