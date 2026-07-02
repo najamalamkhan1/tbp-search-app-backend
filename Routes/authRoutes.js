@@ -16,7 +16,7 @@ router.get("/", (req, res) => {
     
     const baseUrl = process.env.HOST;
     const redirectUri = `${baseUrl}/auth/callback`;
-    const installUrl = `https://${shop}/admin/oauth/authorize?client_id=${process.env.SHOPIFY_API_KEY}&scope=read_products,write_products&redirect_uri=${redirectUri}`;
+    const installUrl = `https://${shop}/admin/oauth/authorize?client_id=${process.env.SHOPIFY_API_KEY}&scope=read_products,write_products,read_inventory&redirect_uri=${redirectUri}`;
     
     console.log("INSTALL URL:", installUrl);
     res.redirect(installUrl);
@@ -71,6 +71,7 @@ const registerWebhooks = async (shop, accessToken, baseUrl) => {
         "products/create",
         "products/update",
         "products/delete",
+        "inventory_levels/update",
         "collections/create",
         "collections/update",
         "collections/delete"

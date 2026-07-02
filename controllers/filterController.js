@@ -268,8 +268,24 @@ const getAvailabilityOptions = async (match) => {
     {
       $group: {
         _id: null,
-        inStock: { $sum: { $cond: [{ $gt: ["$stock", 0] }, 1, 0] } },
-        outOfStock: { $sum: { $cond: [{ $lte: ["$stock", 0] }, 1, 0] } }
+        inStock: {
+          $sum: {
+            $cond: [
+              { $or: [{ $gt: ["$stock", 0] }, { $eq: ["$availableForSale", true] }] },
+              1,
+              0
+            ]
+          }
+        },
+        outOfStock: {
+          $sum: {
+            $cond: [
+              { $and: [{ $lte: ["$stock", 0] }, { $ne: ["$availableForSale", true] }] },
+              1,
+              0
+            ]
+          }
+        }
       }
     }
   ]);

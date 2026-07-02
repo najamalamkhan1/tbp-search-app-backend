@@ -562,6 +562,34 @@ const latestProductTime = (product = {}) =>
   toTime(product.publishedAt) ||
   toTime(product.shopifyCreatedAt);
 
+const activePublishedProductMatch = (extra = {}) => ({
+  ...extra,
+  status: "ACTIVE",
+  $or: [
+    { shopifyPublishedAt: { $ne: null } },
+    { publishedAt: { $ne: null } }
+  ]
+});
+
+const inStockCondition = () => ({
+  $or: [
+    { stock: { $gt: 0 } },
+    { availableForSale: true }
+  ]
+});
+
+const outOfStockCondition = () => ({
+  $and: [
+    { stock: { $lte: 0 } },
+    { availableForSale: { $ne: true } }
+  ]
+});
+
+const addProductCondition = (query, condition) => {
+  query.$and = query.$and || [];
+  query.$and.push(condition);
+};
+
 const latestCollectionTime = (collection = {}) => {
   // Take the MORE RECENT of shopifyCreatedAt and firstPublishedAt
   // shopifyCreatedAt: stable Shopify creation date (never changes)
@@ -1072,7 +1100,7 @@ router.get("/search", async (req, res) => {
         .limit((pageLimit * 5) + 1)
         .lean()
         .select(`
-          productId title handle vendor image price stock productType
+          productId title handle vendor image price stock availableForSale productType
           colors sizes tags collections status
           firstPublishedAt shopifyPublishedAt publishedAt shopifyCreatedAt
         `);
@@ -1539,7 +1567,7 @@ router.get("/search", async (req, res) => {
 
     if (pureVendorFastPath) {
       const fastSelectFields = `
-        productId title handle vendor image price stock productType
+        productId title handle vendor image price stock availableForSale productType
         shopifyCreatedAt shopifyPublishedAt publishedAt firstPublishedAt
         collections tags colors sizes status
       `;
@@ -1956,7 +1984,7 @@ router.get("/search", async (req, res) => {
     // Applied on top of text/AI search — narrows results
     // =========================
     if (hideOutOfStock) {
-      productQuery.stock = { $gt: 0 };
+      addProductCondition(productQuery, inStockCondition());
     }
     if (requestedAvailabilityFilter && isFilterActive("availability")) {
       const availabilityValues = normalizeParamList(requestedAvailabilityFilter).map(v => v.toLowerCase());
@@ -1967,9 +1995,9 @@ router.get("/search", async (req, res) => {
         v === "0" || v === "false" || v === "unavailable" || v === "out_of_stock" || v === "out-of-stock" || v === "out of stock"
       );
       if (wantsInStock && !wantsOutOfStock) {
-        productQuery.stock = { $gt: 0 };
+        addProductCondition(productQuery, inStockCondition());
       } else if (wantsOutOfStock && !wantsInStock) {
-        productQuery.stock = { $lte: 0 };
+        addProductCondition(productQuery, outOfStockCondition());
       }
     }
     if (requestedVendorFilter && isFilterActive("vendor")) {
@@ -2096,12 +2124,13 @@ router.get("/search", async (req, res) => {
     ["stock", "vendor", "price", "colors", "tags", "collections", "sizes", "productType"].forEach(key => {
       if (productQuery[key] !== undefined) userNarrowingQuery[key] = productQuery[key];
     });
+    if (productQuery.$and) userNarrowingQuery.$and = productQuery.$and;
 
     const __dbStart = Date.now();
     const productFetchLimit = Math.min(pageOffset + (pageLimit * 3), 240);
 
     const selectFields = `
-      productId title handle vendor image price stock productType
+      productId title handle vendor image price stock availableForSale productType
 shopifyCreatedAt shopifyPublishedAt publishedAt firstPublishedAt
 collections searchableText tags colors sizes status
       ${searchOpts.searchInDescription ? 'description' : ''}
@@ -2210,7 +2239,7 @@ collections searchableText tags colors sizes status
           // description excluded — it can be thousands of words (caused 57s hang).
           // tags included — they're short words (e.g. "embroidery") that enable typo matching.
           .select(`
-            title vendor productType tags handle image price
+            title vendor productType tags handle image price stock availableForSale
             createdAt shopifyCreatedAt shopifyPublishedAt publishedAt firstPublishedAt status
           `);
 
@@ -3962,10 +3991,10 @@ router.get("/trending-brands", async (req, res) => {
     // =========================
 
     // Build local product list from MongoDB first
-    const localDbProducts = await Product.find({ store: cleanStore, status: 'ACTIVE' })
+    const localDbProducts = await Product.find(activePublishedProductMatch({ store: cleanStore }))
       .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
       .limit(400)
-      .select('vendor title handle image price shopifyCreatedAt firstPublishedAt shopifyPublishedAt publishedAt productId')
+      .select('vendor title handle image price stock availableForSale shopifyCreatedAt firstPublishedAt shopifyPublishedAt publishedAt productId')
       .lean();
 
     // Normalize local DB products to the same shape used below
@@ -4283,15 +4312,14 @@ router.get("/trending", async (req, res) => {
         }
       ]),
       Product.find({
-        store: cleanStore,
-        status: "ACTIVE",
+        ...activePublishedProductMatch({ store: cleanStore }),
         ...(excludedProductIds.size && { productId: { $nin: Array.from(excludedProductIds) } })
       })
         .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
         .limit(500)
         .lean()
         .select(
-          "productId title handle vendor image price " +
+          "productId title handle vendor image price stock availableForSale " +
           "firstPublishedAt shopifyCreatedAt shopifyPublishedAt publishedAt status"
         )
     ]);

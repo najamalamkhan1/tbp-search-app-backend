@@ -103,6 +103,30 @@ const productSchema =
       default: 0
     },
 
+    availableForSale: {
+      type: Boolean,
+      default: false,
+      index: true
+    },
+
+    inventoryItemIds: {
+      type: [String],
+      default: []
+    },
+
+    variantsInventory: {
+      type: [
+        {
+          variantId: { type: String, default: "" },
+          inventoryItemId: { type: String, default: "" },
+          quantity: { type: Number, default: 0 },
+          availableForSale: { type: Boolean, default: false },
+          inventoryPolicy: { type: String, default: "" }
+        }
+      ],
+      default: []
+    },
+
     sizes: {
       type: [String],
       default: []

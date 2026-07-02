@@ -2,6 +2,8 @@ const express = require("express");
 const router = express.Router();
 const Product = require("../Models/productModel");
 const Store = require("../Models/store");
+const searchRoute = require("./search");
+const fetch = require("node-fetch");
 
 router.use((req, res, next) => {
 
@@ -135,6 +137,42 @@ function sumWebhookStock(variants = []) {
   );
 }
 
+const inventoryItemIdValues = (id) => {
+  const plainId = String(id || "").replace(/^gid:\/\/shopify\/InventoryItem\//, "").trim();
+  return [...new Set([
+    plainId,
+    plainId ? `gid://shopify/InventoryItem/${plainId}` : ""
+  ].filter(Boolean))];
+};
+
+function buildWebhookInventory(product = {}) {
+  const variantsInventory = (product.variants || [])
+    .map(variant => {
+      const inventoryItemId = String(variant?.inventory_item_id || "").trim();
+      return {
+        variantId: String(variant?.id || ""),
+        inventoryItemId,
+        quantity: Math.max(Number(variant?.inventory_quantity || 0), 0),
+        availableForSale:
+          Number(variant?.inventory_quantity || 0) > 0 ||
+          String(variant?.inventory_policy || "").toLowerCase() === "continue",
+        inventoryPolicy: String(variant?.inventory_policy || "").toUpperCase()
+      };
+    })
+    .filter(item => item.inventoryItemId);
+
+  const inventoryItemIds = [...new Set(
+    variantsInventory.flatMap(item => inventoryItemIdValues(item.inventoryItemId))
+  )];
+  const stock = variantsInventory.reduce((total, item) => total + Math.max(Number(item.quantity || 0), 0), 0);
+  const availableForSale = Boolean(product.published_at) && (
+    stock > 0 ||
+    variantsInventory.some(item => item.availableForSale || item.inventoryPolicy === "CONTINUE")
+  );
+
+  return { variantsInventory, inventoryItemIds, stock, availableForSale };
+}
+
 // =====================================
 // CREATE PRODUCT
 // =====================================
@@ -200,7 +238,8 @@ ${product.tags || ""}
         variants: product.variants || [],
         tags: webhookTags
       });
-      const webhookStock = sumWebhookStock(product.variants || []);
+      const webhookInventory = buildWebhookInventory(product);
+      const webhookStock = webhookInventory.stock || sumWebhookStock(product.variants || []);
       searchableText = [
         product.title || "",
         product.vendor || "",
@@ -258,6 +297,12 @@ ${product.tags || ""}
 
           stock: webhookStock,
 
+          availableForSale: webhookInventory.availableForSale,
+
+          inventoryItemIds: webhookInventory.inventoryItemIds,
+
+          variantsInventory: webhookInventory.variantsInventory,
+
           sizes: webhookSizes,
 
           status:
@@ -307,6 +352,8 @@ ${product.tags || ""}
           returnDocument: "after"
         }
       );
+      searchRoute.clearTrendingCache(shop);
+      searchRoute.clearSearchCache(shop);
 
       console.log(
         "✅ PRODUCT CREATED:",
@@ -396,7 +443,8 @@ ${product.tags || ""}
         variants: product.variants || [],
         tags: webhookTags
       });
-      const webhookStock = sumWebhookStock(product.variants || []);
+      const webhookInventory = buildWebhookInventory(product);
+      const webhookStock = webhookInventory.stock || sumWebhookStock(product.variants || []);
       searchableText = [
         product.title || "",
         product.vendor || "",
@@ -424,6 +472,9 @@ ${product.tags || ""}
         image: product.image?.src || "",
         price: Number(product.variants?.[0]?.price || 0),
         stock: webhookStock,
+        availableForSale: webhookInventory.availableForSale,
+        inventoryItemIds: webhookInventory.inventoryItemIds,
+        variantsInventory: webhookInventory.variantsInventory,
         sizes: webhookSizes,
         status: product.published_at
           ? (product.status || "active").toUpperCase()
@@ -447,6 +498,8 @@ ${product.tags || ""}
         { $set: updateFields },
         { upsert: true, new: true }
       );
+      searchRoute.clearTrendingCache(shop);
+      searchRoute.clearSearchCache(shop);
 
       console.log(
         "♻️ PRODUCT UPDATED:",
@@ -505,6 +558,8 @@ router.post(
 
         store: shop
       });
+      searchRoute.clearTrendingCache(shop);
+      searchRoute.clearSearchCache(shop);
 
       console.log(
         "🗑️ PRODUCT DELETED:",
@@ -522,6 +577,126 @@ router.post(
         err
       );
 
+      if (!res.headersSent) {
+        res.status(500).send("Error");
+      }
+    }
+  }
+);
+
+async function fetchInventoryItemAvailable({ shop, accessToken, inventoryItemId }) {
+  const plainId = String(inventoryItemId || "").replace(/^gid:\/\/shopify\/InventoryItem\//, "").trim();
+  if (!plainId) return null;
+
+  const response = await fetch(
+    `https://${shop}/admin/api/2026-04/inventory_levels.json?inventory_item_ids=${encodeURIComponent(plainId)}`,
+    {
+      headers: {
+        "X-Shopify-Access-Token": accessToken,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Inventory levels fetch failed: ${response.status}`);
+  }
+
+  const data = await response.json();
+  const levels = Array.isArray(data?.inventory_levels) ? data.inventory_levels : [];
+  return levels.reduce((total, level) => total + Math.max(Number(level?.available || 0), 0), 0);
+}
+
+async function recomputeProductStock(product) {
+  const variantsInventory = Array.isArray(product.variantsInventory)
+    ? product.variantsInventory
+    : [];
+  const stock = variantsInventory.reduce((total, item) =>
+    total + Math.max(Number(item?.quantity || 0), 0), 0
+  );
+  const availableForSale = stock > 0 || variantsInventory.some(item =>
+    item?.availableForSale === true ||
+    String(item?.inventoryPolicy || "").toUpperCase() === "CONTINUE"
+  );
+
+  await Product.updateOne(
+    { _id: product._id },
+    {
+      $set: {
+        stock,
+        availableForSale,
+        variantsInventory,
+        updatedAt: new Date()
+      }
+    }
+  );
+}
+
+// =====================================
+// LIVE INVENTORY UPDATE
+// =====================================
+router.post(
+  "/inventory_levels/update",
+  verifyShopifyWebhook,
+  async (req, res) => {
+    try {
+      if (!res.headersSent) {
+        res.status(200).send("OK");
+      }
+
+      const payload = JSON.parse(req.body.toString());
+      const shop = req.headers["x-shopify-shop-domain"]?.trim()?.toLowerCase();
+      const inventoryItemId = String(payload.inventory_item_id || "").trim();
+      if (!shop || !inventoryItemId) return;
+
+      const store = await Store.findOne({ domain: shop }).lean();
+      let liveAvailable = Math.max(Number(payload.available || 0), 0);
+      if (store?.accessToken) {
+        try {
+          liveAvailable = await fetchInventoryItemAvailable({
+            shop,
+            accessToken: store.accessToken,
+            inventoryItemId
+          });
+        } catch (fetchErr) {
+          console.warn("INVENTORY LEVEL FETCH FALLBACK:", fetchErr.message);
+        }
+      }
+      const quantity = Math.max(Number(liveAvailable ?? payload.available ?? 0), 0);
+      const ids = inventoryItemIdValues(inventoryItemId);
+
+      const products = await Product.find({
+        store: shop,
+        inventoryItemIds: { $in: ids }
+      }).select("_id variantsInventory").lean();
+
+      for (const product of products) {
+        const variantsInventory = (product.variantsInventory || []).map(item => {
+          const itemIds = inventoryItemIdValues(item.inventoryItemId);
+          if (!itemIds.some(id => ids.includes(id))) return item;
+          return {
+            ...item,
+            quantity,
+            availableForSale: quantity > 0 || String(item.inventoryPolicy || "").toUpperCase() === "CONTINUE"
+          };
+        });
+
+        await recomputeProductStock({ ...product, variantsInventory });
+      }
+
+      searchRoute.clearSearchCache(shop);
+      searchRoute.clearTrendingCache(shop);
+
+      console.log(
+        "INVENTORY UPDATED:",
+        inventoryItemId,
+        "qty=",
+        quantity,
+        "products=",
+        products.length
+      );
+    } catch (err) {
+      console.log("INVENTORY WEBHOOK ERROR:", err);
       if (!res.headersSent) {
         res.status(500).send("Error");
       }

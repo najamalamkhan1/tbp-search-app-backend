@@ -4,6 +4,7 @@ const fetch = require("node-fetch");
 const Product = require("../Models/productModel");
 const Store = require("../Models/store")
 const Collection = require("../Models/collectionModel");
+const searchRoute = require("./search");
 
 // =========================
 // 🎨 COLOR EXTRACTION HELPER
@@ -384,6 +385,8 @@ query getProducts($cursor: String) {
   createdAt
   updatedAt
   publishedAt
+  totalInventory
+  availableForSale
         featuredImage {
           url
         }
@@ -398,11 +401,17 @@ query getProducts($cursor: String) {
           }
         }
 
-        variants(first: 10) {
+        variants(first: 100) {
           edges {
             node {
+              id
               price
               inventoryQuantity
+              availableForSale
+              inventoryPolicy
+              inventoryItem {
+                id
+              }
               selectedOptions {
                 name
                 value
@@ -535,9 +544,32 @@ query getProducts($cursor: String) {
             variantOptions: allVariantOptions,
             tags: Array.isArray(p.tags) ? p.tags : []
           });
-          const stock = (p.variants?.edges || []).reduce((total, edge) =>
-            total + Math.max(Number(edge?.node?.inventoryQuantity || 0), 0), 0
-          );
+          const variantInventory = (p.variants?.edges || [])
+            .map(edge => {
+              const variant = edge?.node || {};
+              const inventoryItemId = String(variant.inventoryItem?.id || "");
+              return {
+                variantId: String(variant.id || ""),
+                inventoryItemId,
+                quantity: Math.max(Number(variant.inventoryQuantity || 0), 0),
+                availableForSale: variant.availableForSale === true,
+                inventoryPolicy: String(variant.inventoryPolicy || "")
+              };
+            })
+            .filter(item => item.inventoryItemId);
+          const inventoryItemIds = [...new Set(
+            variantInventory.flatMap(item => [
+              item.inventoryItemId,
+              item.inventoryItemId.replace(/^gid:\/\/shopify\/InventoryItem\//, "")
+            ]).filter(Boolean)
+          )];
+          const stock = Number.isFinite(Number(p.totalInventory))
+            ? Math.max(Number(p.totalInventory), 0)
+            : variantInventory.reduce((total, item) => total + Math.max(Number(item.quantity || 0), 0), 0);
+          const availableForSale =
+            p.availableForSale === true ||
+            stock > 0 ||
+            variantInventory.some(item => item.availableForSale || item.inventoryPolicy === "CONTINUE");
 
           // Track for vision AI (no colors found + has image)
           if (productColors.length === 0 && p.featuredImage?.url) {
@@ -625,6 +657,12 @@ query getProducts($cursor: String) {
                   price: price || 0,
 
                   stock,
+
+                  availableForSale,
+
+                  inventoryItemIds,
+
+                  variantsInventory: variantInventory,
 
                   sizes: productSizes,
 
@@ -775,6 +813,8 @@ query getProducts($cursor: String) {
     // ✅ DONE
     // =========================
     if (heartbeat) clearInterval(heartbeat);
+    searchRoute.clearTrendingCache(shop);
+    searchRoute.clearSearchCache(shop);
     sendEvent({ type: "done", total: totalSynced });
     if (clientConnected && !res.destroyed && !res.writableEnded) {
       res.end();
