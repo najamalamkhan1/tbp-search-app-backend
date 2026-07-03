@@ -921,6 +921,9 @@ router.get("/search", async (req, res) => {
 
     const originalQuery =
       q.toLowerCase();
+    const seasonalBroadQuery =
+      /\b(seasonal|summer|winter|spring|autumn|fall|eid|festive|lawn|khaddar|cotton|linen|pret|new\s+arrival|new\s+arrivals|collection|collections)\b/i
+        .test(originalQuery);
     const requestedColorFilter = filterColor || filterColors || filterColour || filterColours ||
       req.query["color[]"] || req.query["colors[]"] || req.query["filter[color]"] || req.query["filter[colors]"];
     const requestedVendorFilter = filterVendor || filterBrand || filterBrands ||
@@ -956,8 +959,30 @@ router.get("/search", async (req, res) => {
     const currentPage = Math.max(parseInt(requestedPage, 10) || 1, 1);
     const pageLimit = Math.min(Math.max(parseInt(requestedLimit || requestedPerPage || requestedPerPageAlt, 10) || 48, 48), 48);
     const pageOffset = (currentPage - 1) * pageLimit;
+    const normalizeProductAvailability = (product = {}) => {
+      const stock = Number(product.stock || 0);
+      const availableForSale =
+        product.availableForSale === true ||
+        stock > 0 ||
+        (Array.isArray(product.variantsInventory) && product.variantsInventory.some(item =>
+          item?.availableForSale === true ||
+          Number(item?.quantity || 0) > 0 ||
+          String(item?.inventoryPolicy || "").toUpperCase() === "CONTINUE"
+        ));
+
+      return {
+        ...product,
+        stock,
+        availableForSale,
+        inStock: availableForSale,
+        isAvailable: availableForSale,
+        soldOut: !availableForSale
+      };
+    };
+    const normalizeProductsAvailability = (products = []) =>
+      (products || []).map(normalizeProductAvailability);
     const paginatePayload = (payload) => {
-      const allProducts = Array.isArray(payload.products) ? payload.products : [];
+      const allProducts = normalizeProductsAvailability(Array.isArray(payload.products) ? payload.products : []);
       const totalProducts = Number(payload.meta?.totalProducts ?? allProducts.length);
       const totalPages = Math.max(Math.ceil(totalProducts / pageLimit), 1);
       const pagedProducts = allProducts.slice(pageOffset, pageOffset + pageLimit).slice(0, pageLimit);
@@ -1034,7 +1059,7 @@ router.get("/search", async (req, res) => {
         },
         vendors: [],
         collections: [],
-        products: latestProducts,
+        products: normalizeProductsAvailability(latestProducts),
         suggestions: []
       });
 
@@ -1109,12 +1134,12 @@ router.get("/search", async (req, res) => {
       const hasNextPage = filteredShortProductsRaw.length > pageLimit;
       const shortProducts = filteredShortProductsRaw.slice(0, pageLimit).map(p => {
         const latestTime = latestProductTime(p);
-        return {
+        return normalizeProductAvailability({
           ...p,
           latestTime,
           latestDate: latestTime ? new Date(latestTime) : null,
           score: String(p.vendor || "").toLowerCase().startsWith(queryText) ? 50000 : 10000
-        };
+        });
       });
       const shortTotalEstimate = pageOffset + shortProducts.length + (hasNextPage ? 1 : 0);
 
@@ -2101,6 +2126,18 @@ router.get("/search", async (req, res) => {
 
         if (orConds.length) productQuery.$or = orConds;
       }
+    } else if (seasonalBroadQuery && coreDbTerms.length && !colorOnlySearch) {
+      const seasonalTerms = [...new Set([
+        ...coreDbTerms,
+        ...originalQuery.split(/\s+/),
+        ...expandCategoryToTags(originalQuery.split(/\s+/))
+      ]
+        .map(stripPriceNoise)
+        .map(t => String(t || "").toLowerCase().trim())
+        .filter(t => t.length >= 3 && !PRICE_NOISE.has(t))
+      )];
+      const orConds = buildOrConds(seasonalTerms);
+      if (orConds.length) productQuery.$or = orConds;
     } else if (canUseTextSearch && coreDbTerms.length && !colorOnlySearch) {
       productQuery.$text = { $search: coreDbTerms.slice(0, 4).join(" ") };
     } else {
@@ -2127,7 +2164,9 @@ router.get("/search", async (req, res) => {
     if (productQuery.$and) userNarrowingQuery.$and = productQuery.$and;
 
     const __dbStart = Date.now();
-    const productFetchLimit = Math.min(pageOffset + (pageLimit * 3), 240);
+    const productFetchLimit = seasonalBroadQuery
+      ? Math.min(pageOffset + (pageLimit * 10), 500)
+      : Math.min(pageOffset + (pageLimit * 3), 240);
 
     const selectFields = `
       productId title handle vendor image price stock availableForSale productType
