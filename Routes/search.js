@@ -1011,15 +1011,29 @@ router.get("/search", async (req, res) => {
       };
     };
     const fullProductsPayload = (payload) => {
-      const allProducts = normalizeProductsAvailability(Array.isArray(payload.products) ? payload.products : []);
+      const allProducts = currentPage > 1
+        ? []
+        : normalizeProductsAvailability(Array.isArray(payload.products) ? payload.products : []);
+      const totalProducts = Number(payload.meta?.totalProducts ?? allProducts.length);
       return {
         ...payload,
         meta: {
           ...(payload.meta || {}),
-          totalProducts: Number(payload.meta?.totalProducts ?? allProducts.length),
+          totalProducts,
           returnedProducts: allProducts.length,
           enforcedLimit: allProducts.length,
-          pagination: null
+          pagination: {
+            page: currentPage,
+            limit: totalProducts,
+            offset: currentPage > 1 ? totalProducts : 0,
+            totalProducts,
+            returnedProducts: allProducts.length,
+            totalPages: 1,
+            hasNextPage: false,
+            hasPrevPage: currentPage > 1,
+            nextPage: null,
+            prevPage: currentPage > 1 ? 1 : null
+          }
         },
         products: allProducts
       };
@@ -2439,13 +2453,15 @@ collections searchableText tags colors sizes status
       );
     };
 
-    const productKey = (product) =>
-      String(
-        product.productId ||
-        product.id ||
-        product.handle ||
-        `${product.vendor || ""}|${product.title || ""}`
-      ).toLowerCase();
+    const productKey = (product) => {
+      const handleKey = String(product.handle || "").trim().toLowerCase();
+      if (handleKey) return `handle:${handleKey}`;
+
+      const vendorTitleKey = normalizeVendorName(`${product.vendor || ""} ${product.title || ""}`);
+      if (vendorTitleKey) return `title:${vendorTitleKey}`;
+
+      return String(product.productId || product.id || product._id || "").toLowerCase();
+    };
 
     const isRtsProduct = (product) =>
       /\brts\b/i.test(`${product.title || ""} ${Array.isArray(product.tags) ? product.tags.join(" ") : product.tags || ""}`);
