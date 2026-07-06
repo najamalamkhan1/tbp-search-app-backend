@@ -617,6 +617,7 @@ const NON_VENDOR_KEYWORDS = new Set([
   "engagement", "mayun", "eid", "party", "festive",
   // Lifestyle / category
   "casual", "formal", "office", "university", "college", "bridal", "wedding", "bride", "dulhan",
+  "women", "woman", "female", "ladies", "lady", "girls", "girl", "men", "man", "male", "gents", "boys", "boy", "kids", "children",
   // Product types
   "lawn", "suit", "suits", "kurti", "kurtis", "kameez", "lehenga", "gharara", "sharara",
   "saree", "sari", "maxi", "gown", "kaftan", "pret", "unstitched", "stitched",
@@ -922,7 +923,7 @@ router.get("/search", async (req, res) => {
     const originalQuery =
       q.toLowerCase();
     const seasonalBroadQuery =
-      /\b(seasonal|summer|winter|spring|autumn|fall|eid|festive|lawn|khaddar|cotton|linen|pret|new\s+arrival|new\s+arrivals|collection|collections)\b/i
+      /\b(seasonal|summer|winter|spring|autumn|fall|eid|festive|lawn|khaddar|cotton|linen|pret|new\s+arrival|new\s+arrivals|collection|collections|women|woman|ladies|female|girls|men|man|gents|male|boys|kids|children)\b/i
         .test(originalQuery);
     const requestedColorFilter = filterColor || filterColors || filterColour || filterColours ||
       req.query["color[]"] || req.query["colors[]"] || req.query["filter[color]"] || req.query["filter[colors]"];
@@ -1007,6 +1008,20 @@ router.get("/search", async (req, res) => {
           }
         },
         products: pagedProducts
+      };
+    };
+    const fullProductsPayload = (payload) => {
+      const allProducts = normalizeProductsAvailability(Array.isArray(payload.products) ? payload.products : []);
+      return {
+        ...payload,
+        meta: {
+          ...(payload.meta || {}),
+          totalProducts: Number(payload.meta?.totalProducts ?? allProducts.length),
+          returnedProducts: allProducts.length,
+          enforcedLimit: allProducts.length,
+          pagination: null
+        },
+        products: allProducts
       };
     };
 
@@ -1191,7 +1206,11 @@ router.get("/search", async (req, res) => {
     const cacheKey = `${SEARCH_RANKING_VERSION}|${cleanStore}|${originalQuery}|page:${currentPage}|limit:${pageLimit}|collections:${includeCollections ? 1 : 0}|${JSON.stringify(filterStateForCache)}`;
     const cachedSearch = searchCache[cacheKey];
     if (cachedSearch && Date.now() - cachedSearch.timestamp < SEARCH_CACHE_TTL) {
-      return res.json(paginatePayload(cachedSearch.data));
+      return res.json(
+        seasonalBroadQuery && !hasRequestedFilters
+          ? fullProductsPayload(cachedSearch.data)
+          : paginatePayload(cachedSearch.data)
+      );
     }
 
     // =========================
@@ -1352,6 +1371,10 @@ router.get("/search", async (req, res) => {
     // =========================
 
     let detectedVendor = null;
+    const queryHasVendorSignal = normalizeVendorName(normalizedQuery)
+      .split(" ")
+      .filter(Boolean)
+      .some(token => !NON_VENDOR_KEYWORDS.has(token));
 
     const vendorMatches = uniqueVendors
       .map(v => {
@@ -1364,27 +1387,29 @@ router.get("/search", async (req, res) => {
 
         let score = 0;
 
-        // EXACT MATCH
-        if (
-          vendorName === normalizedVendorQuery
-        ) {
-          score += 100000;
-        }
+        if (queryHasVendorSignal) {
+          // EXACT MATCH
+          if (
+            vendorName === normalizedVendorQuery
+          ) {
+            score += 100000;
+          }
 
-        // STARTS WITH
-        if (
-          normalizedVendorQuery &&
-          vendorName.startsWith(normalizedVendorQuery)
-        ) {
-          score += 50000;
-        }
+          // STARTS WITH
+          if (
+            normalizedVendorQuery &&
+            vendorName.startsWith(normalizedVendorQuery)
+          ) {
+            score += 50000;
+          }
 
-        // CONTAINS
-        if (
-          normalizedVendorQuery &&
-          vendorName.includes(normalizedVendorQuery)
-        ) {
-          score += 20000;
+          // CONTAINS
+          if (
+            normalizedVendorQuery &&
+            vendorName.includes(normalizedVendorQuery)
+          ) {
+            score += 20000;
+          }
         }
 
         // TYPO TOLERANCE
@@ -1421,11 +1446,11 @@ router.get("/search", async (req, res) => {
           "co-ord"
         ]);
 
-        const nonGenericQueryTokens = queryTokens.filter(
+        const nonGenericQueryTokens = queryHasVendorSignal ? queryTokens.filter(
           qt =>
             !NON_VENDOR_KEYWORDS.has(qt) &&
             !GENERIC_FASHION_WORDS.has(qt)
-        );
+        ) : [];
 
         nonGenericQueryTokens.forEach(qt => {
           vendorTokens.forEach(vt => {
@@ -3765,12 +3790,19 @@ ${p.productType || ""}
 
     searchDebug("TOTAL handler ms:", Date.now() - __reqStart);
 
-    const responsePayload = paginatePayload(payload);
-    responsePayload.products = (responsePayload.products || []).slice(0, pageLimit);
+    const responsePayload =
+      seasonalBroadQuery && !hasRequestedFilters
+        ? fullProductsPayload(payload)
+        : paginatePayload(payload);
+    if (!(seasonalBroadQuery && !hasRequestedFilters)) {
+      responsePayload.products = (responsePayload.products || []).slice(0, pageLimit);
+    }
     responsePayload.meta = {
       ...(responsePayload.meta || {}),
       returnedProducts: responsePayload.products.length,
-      enforcedLimit: pageLimit
+      enforcedLimit: seasonalBroadQuery && !hasRequestedFilters
+        ? responsePayload.products.length
+        : pageLimit
     };
     if (responsePayload.meta.pagination) {
       responsePayload.meta.pagination.returnedProducts = responsePayload.products.length;
