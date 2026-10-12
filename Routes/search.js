@@ -3149,7 +3149,12 @@ collections searchableText tags colors sizes status
     // 🔥 FINAL PRODUCT SORT
     // =========================
 
-    const defaultSort = searchSettings.defaultSort || "relevance";
+    const configuredSort = searchSettings.defaultSort || "relevance";
+    // A typed query must remain relevance-led even when the storefront's browse
+    // default is "newest". Recency is still the tiebreaker inside each match tier.
+    const defaultSort = normalizedQuery && configuredSort === "newest"
+      ? "relevance"
+      : configuredSort;
     const sortNewestFirst = (a, b) => {
       const availabilityDiff = Number(productIsAvailable(b)) - Number(productIsAvailable(a));
       if (availabilityDiff !== 0) return availabilityDiff;

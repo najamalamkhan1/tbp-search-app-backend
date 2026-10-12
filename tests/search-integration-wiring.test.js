@@ -41,4 +41,5 @@ test("final response preserves relevance sorting after deduplication", () => {
   assert.match(source, /matchPriority: calculateMatchPriority/);
   assert.match(source, /products\.sort\([\s\S]*?defaultSort === "relevance"[\s\S]*?sortByRelevance/);
   assert.doesNotMatch(source, /products = dedupeProducts\(products\);\s*products\.sort\(sortNewestFirst\);/);
+  assert.match(source, /normalizedQuery && configuredSort === "newest"[\s\S]*?"relevance"/);
 });
