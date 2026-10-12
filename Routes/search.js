@@ -13,6 +13,7 @@ const Settings = require("../Models/settingsModel");
 const Filter = require("../Models/Filter");
 const stringSimilarity = require("string-similarity");
 const {
+  calculateMatchPriority,
   compareAvailableLatest,
   normalizeSearchText,
   normalizeTag,
@@ -3028,6 +3029,7 @@ collections searchableText tags colors sizes status
       return {
         ...p,
         keywordHits,
+        matchPriority: calculateMatchPriority(p, remainingQuery || normalizedQuery),
         latestTime: productTime,
         latestDate:
           productTime
@@ -3161,13 +3163,22 @@ collections searchableText tags colors sizes status
       }
       return compareAvailableLatest(a, b);
     };
+    const sortByRelevance = (a, b) => {
+      const availabilityDiff = Number(productIsAvailable(b)) - Number(productIsAvailable(a));
+      if (availabilityDiff !== 0) return availabilityDiff;
+      const matchDiff = Number(b.matchPriority || 0) - Number(a.matchPriority || 0);
+      if (matchDiff !== 0) return matchDiff;
+      const timeDiff = Number(b.latestTime || 0) - Number(a.latestTime || 0);
+      if (timeDiff !== 0) return timeDiff;
+      return Number(b.score || 0) - Number(a.score || 0);
+    };
 
     if (isPureVendorSearch) {
 
       products.sort(sortNewestFirst);
 
     } else if (defaultSort === "relevance") {
-      products.sort(sortNewestFirst);
+      products.sort(sortByRelevance);
     } else if (defaultSort === "newest") {
       products.sort(sortNewestFirst);
     } else if (defaultSort === "oldest") {

@@ -63,6 +63,38 @@ function productIsAvailable(product = {}) {
   );
 }
 
+function calculateMatchPriority(product = {}, query) {
+  const normalizedQuery = normalizeSearchText(query);
+  if (!normalizedQuery) return 0;
+
+  const queryTokens = normalizedQuery.split(" ").filter(Boolean);
+  const title = normalizeSearchText(product.title);
+  const tags = normalizeSearchText(Array.isArray(product.tags) ? product.tags.join(" ") : product.tags);
+  const vendor = normalizeSearchText(product.vendor);
+  const productType = normalizeSearchText(product.productType);
+  const collections = normalizeSearchText(
+    Array.isArray(product.collectionTitles)
+      ? product.collectionTitles.join(" ")
+      : product.collectionTitles || product.collections
+  );
+  const searchable = normalizeSearchText(product.searchableText);
+  const description = normalizeSearchText(product.description);
+  const allTokensMatch = field => queryTokens.every(token => field.split(" ").some(word => word.startsWith(token)));
+  const anyTokenMatches = field => queryTokens.some(token => field.split(" ").some(word => word.startsWith(token)));
+
+  if (title === normalizedQuery) return 700;
+  if (title.includes(normalizedQuery)) return 650;
+  if (allTokensMatch(title)) return 600;
+  if (anyTokenMatches(title)) return 550;
+  if (tags.includes(normalizedQuery) || allTokensMatch(tags)) return 500;
+  if (vendor.includes(normalizedQuery) || allTokensMatch(vendor)) return 450;
+  if (productType.includes(normalizedQuery) || allTokensMatch(productType)) return 400;
+  if (collections.includes(normalizedQuery) || allTokensMatch(collections)) return 350;
+  if (searchable.includes(normalizedQuery) || allTokensMatch(searchable)) return 300;
+  if (description.includes(normalizedQuery) || anyTokenMatches(description)) return 100;
+  return 0;
+}
+
 function compareAvailableLatest(a, b) {
   const availabilityDiff = Number(productIsAvailable(b)) - Number(productIsAvailable(a));
   if (availabilityDiff) return availabilityDiff;
@@ -72,6 +104,7 @@ function compareAvailableLatest(a, b) {
 }
 
 module.exports = {
+  calculateMatchPriority,
   compareAvailableLatest,
   normalizeSearchText,
   normalizeTag,

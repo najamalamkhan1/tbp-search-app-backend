@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  calculateMatchPriority,
   compareAvailableLatest,
   normalizeSearchText,
   normalizeTag,
@@ -60,4 +61,20 @@ test("latest date wins within the same availability group", () => {
     { title: "latest", stock: 1, latestTime: 200 },
   ].sort(compareAvailableLatest);
   assert.equal(products[0].title, "latest");
+});
+
+test("direct title and tag fabric matches outrank description-only matches", () => {
+  const titleMatch = calculateMatchPriority({ title: "Pure Silk Shirt" }, "silk");
+  const tagMatch = calculateMatchPriority({ title: "Embroidered Suit", tags: ["Silk"] }, "silk");
+  const descriptionMatch = calculateMatchPriority({ title: "Velvet Suit", description: "Includes silk trouser" }, "silk");
+
+  assert.ok(titleMatch > tagMatch);
+  assert.ok(tagMatch > descriptionMatch);
+});
+
+test("multi-word title prefixes receive direct title priority", () => {
+  assert.equal(
+    calculateMatchPriority({ title: "Lira Studio Festive Edit" }, "lira stu"),
+    650
+  );
 });
