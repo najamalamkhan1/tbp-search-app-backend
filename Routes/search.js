@@ -3694,7 +3694,19 @@ collections searchableText tags colors sizes status
         }));
 
     products = dedupeProducts(products);
-    products.sort(sortNewestFirst);
+    products.sort(
+      isPureVendorSearch || defaultSort === "newest"
+        ? sortNewestFirst
+        : defaultSort === "relevance"
+          ? sortByRelevance
+          : defaultSort === "oldest"
+            ? (a, b) => (a.latestTime || 0) - (b.latestTime || 0)
+            : defaultSort === "price_asc"
+              ? (a, b) => (parseFloat(a.price) || 0) - (parseFloat(b.price) || 0)
+              : defaultSort === "price_desc"
+                ? (a, b) => (parseFloat(b.price) || 0) - (parseFloat(a.price) || 0)
+                : sortByRelevance
+    );
 
     // Category-based collection filter: if collection title contains a category term, only keep it if query also contains that category (or its synonyms)
     // Avoid showing irrelevant collections for generic queries like "summer dress" → show only collections with "summer" in title, not all dress collections
@@ -3782,7 +3794,7 @@ ${p.productType || ""}
           .map(normalizeTag)
           .some(tag => finalRequestedTags.has(tag))
       );
-      products.sort(sortNewestFirst);
+      products.sort(defaultSort === "relevance" && !isPureVendorSearch ? sortByRelevance : sortNewestFirst);
     }
 
     const payload = {

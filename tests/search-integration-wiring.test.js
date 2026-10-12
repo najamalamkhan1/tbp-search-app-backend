@@ -35,3 +35,10 @@ test("trending brands does not block on live Shopify results", () => {
   assert.match(source, /const results = \[\];/);
   assert.match(source, /Avoid a Shopify Admin API call/);
 });
+
+test("final response preserves relevance sorting after deduplication", () => {
+  const source = read("Routes/search.js");
+  assert.match(source, /matchPriority: calculateMatchPriority/);
+  assert.match(source, /products\.sort\([\s\S]*?defaultSort === "relevance"[\s\S]*?sortByRelevance/);
+  assert.doesNotMatch(source, /products = dedupeProducts\(products\);\s*products\.sort\(sortNewestFirst\);/);
+});
