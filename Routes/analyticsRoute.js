@@ -149,6 +149,14 @@ router.post("/analytics", async (req, res) => {
 
     });
 
+    // Search/click activity changes trending scores. Lazy require avoids a module
+    // initialization cycle while ensuring the next trending request is fresh.
+    try {
+      require("./search").clearTrendingCache?.(normalizedStore);
+    } catch (cacheErr) {
+      console.warn("[Analytics] trending cache invalidation failed:", cacheErr.message);
+    }
+
     // =====================================
     // 🔥 AUTO LEARN SYNONYMS
     // =====================================

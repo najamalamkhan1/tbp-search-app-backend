@@ -53,6 +53,11 @@ const productSchema =
       default: "",
       index: true
     },
+    normalizedVendor: {
+      type: String,
+      default: "",
+      index: true
+    },
 
     // =========================
     // 🔥 PRODUCT TYPE
@@ -66,6 +71,10 @@ const productSchema =
     // 🔥 TAGS
     // =========================
     tags: {
+      type: [String],
+      default: []
+    },
+    normalizedTags: {
       type: [String],
       default: []
     },
@@ -199,6 +208,10 @@ const productSchema =
 // 🔥 AUTO GENERATE SEARCHABLE TEXT
 // ========================================
 productSchema.pre("save", function (next) {
+
+  const normalize = value => String(value || "").toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+  this.normalizedVendor = normalize(this.vendor);
+  this.normalizedTags = (this.tags || []).map(normalize).filter(Boolean);
 
   this.searchableText = `
   ${this.title}
@@ -365,6 +378,20 @@ productSchema.index({
   store: 1,
   status: 1,
   tags: 1,
+  firstPublishedAt: -1
+});
+
+productSchema.index({
+  store: 1,
+  status: 1,
+  normalizedVendor: 1,
+  firstPublishedAt: -1
+});
+
+productSchema.index({
+  store: 1,
+  status: 1,
+  normalizedTags: 1,
   firstPublishedAt: -1
 });
 

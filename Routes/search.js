@@ -12,6 +12,13 @@ const TrendingSettings = require("../Models/trendingSettingsModel");
 const Settings = require("../Models/settingsModel");
 const Filter = require("../Models/Filter");
 const stringSimilarity = require("string-similarity");
+const {
+  compareAvailableLatest,
+  normalizeSearchText,
+  normalizeTag,
+  productIsAvailable,
+  resolveVendor,
+} = require("../utils/searchRanking");
 // =========================
 // AI EXPANSION (Groq Llama)
 // =========================
@@ -869,9 +876,9 @@ Rules: 2-5 words each, English only, season-relevant, fashion only.`;
 router.get("/search", async (req, res) => {
 
   try {
-    res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-    res.set("Pragma", "no-cache");
-    res.set("Expires", "0");
+    // Short browser/CDN reuse makes repeated queries instant while webhook-driven
+    // server cache invalidation keeps product data fresh.
+    res.set("Cache-Control", "public, max-age=15, stale-while-revalidate=45");
 
     const __reqStart = Date.now();
 
@@ -1506,7 +1513,10 @@ router.get("/search", async (req, res) => {
       .filter(v => v.score > 0)
       .sort((a, b) => b.score - a.score);
 
-    if (vendorMatches.length && vendorMatches[0].score > 10000) {
+    // Deterministic token-prefix resolution handles every multi-word brand, e.g.
+    // "lira", "lira stu", "sana saf", without brand-specific hard-coding.
+    detectedVendor = resolveVendor(normalizedQuery, uniqueVendors, NON_VENDOR_KEYWORDS);
+    if (!detectedVendor && vendorMatches.length && vendorMatches[0].score > 10000) {
       detectedVendor = vendorMatches[0].vendor;
     }
 
@@ -2078,8 +2088,18 @@ router.get("/search", async (req, res) => {
     if (requestedColorFilter && isFilterActive("color")) {
       productQuery.colors = { $in: expandColorTermsForDb(normalizeColorParamValues(requestedColorFilter)) };
     }
-    if (requestedTagFilter && isFilterActive("tag")) {
-      productQuery.tags = { $in: normalizeParamList(requestedTagFilter).map(v => new RegExp(`^${escapeRegex(v)}$`, "i")) };
+    if (requestedTagFilter) {
+      const requestedTags = normalizeParamList(requestedTagFilter);
+      const normalizedRequestedTags = requestedTags.map(normalizeTag).filter(Boolean);
+      // Existing records fall back to the original tag array; newly synced records
+      // use normalizedTags and can use the compound index.
+      productQuery.$and = productQuery.$and || [];
+      productQuery.$and.push({
+        $or: [
+          { normalizedTags: { $in: normalizedRequestedTags } },
+          { tags: { $in: requestedTags.map(v => new RegExp(`^${escapeRegex(v)}$`, "i")) } }
+        ]
+      });
     }
     const selectedCollections = normalizeParamList(requestedCollectionFilter);
     if (selectedCollections.length && isFilterActive("collection")) {
@@ -2182,7 +2202,10 @@ router.get("/search", async (req, res) => {
     } else {
       // Admin has custom field flags — per-field regex fallback (core terms only)
       const orConds = colorOnlySearch ? [] : buildOrConds(coreDbTerms);
-      if (orConds.length) productQuery.$and = [{ $or: orConds }];
+      if (orConds.length) {
+        productQuery.$and = productQuery.$and || [];
+        productQuery.$and.push({ $or: orConds });
+      }
     }
 
     // =========================
@@ -3103,6 +3126,21 @@ collections searchableText tags colors sizes status
       }
     }
 
+    // Final correctness guard: later enrichment/fallback stages may append
+    // candidates, but an explicit user tag must never leak non-matching items.
+    if (requestedTagFilter) {
+      const requestedTagSet = new Set(
+        normalizeParamList(requestedTagFilter).map(normalizeTag).filter(Boolean)
+      );
+      products = products.filter(product => {
+        const productTags = [
+          ...(Array.isArray(product.normalizedTags) ? product.normalizedTags : []),
+          ...(Array.isArray(product.tags) ? product.tags : [])
+        ].map(normalizeTag).filter(Boolean);
+        return productTags.some(tag => requestedTagSet.has(tag));
+      });
+    }
+
     // Pure vendor search => newest products first
 
     // =========================
@@ -3111,15 +3149,17 @@ collections searchableText tags colors sizes status
 
     const defaultSort = searchSettings.defaultSort || "relevance";
     const sortNewestFirst = (a, b) => {
+      const availabilityDiff = Number(productIsAvailable(b)) - Number(productIsAvailable(a));
+      if (availabilityDiff !== 0) return availabilityDiff;
+      const timeDiff = (b.latestTime || 0) - (a.latestTime || 0);
+      if (timeDiff !== 0) return timeDiff;
       const priorityDiff = (b.collectionPriority || 0) - (a.collectionPriority || 0);
       if (priorityDiff !== 0) return priorityDiff;
       if (!normalizedQuery.includes("rts")) {
         const rtsDiff = Number(isRtsProduct(a)) - Number(isRtsProduct(b));
         if (rtsDiff !== 0) return rtsDiff;
       }
-      const timeDiff = (b.latestTime || 0) - (a.latestTime || 0);
-      if (timeDiff !== 0) return timeDiff;
-      return (b.score || 0) - (a.score || 0);
+      return compareAvailableLatest(a, b);
     };
 
     if (isPureVendorSearch) {
@@ -3722,6 +3762,18 @@ ${p.productType || ""}
     // =========================
     // 🔥 FINAL RESPONSE
     // =========================
+    if (requestedTagFilter) {
+      const finalRequestedTags = new Set(
+        normalizeParamList(requestedTagFilter).map(normalizeTag).filter(Boolean)
+      );
+      products = products.filter(product =>
+        (Array.isArray(product.tags) ? product.tags : [])
+          .map(normalizeTag)
+          .some(tag => finalRequestedTags.has(tag))
+      );
+      products.sort(sortNewestFirst);
+    }
+
     const payload = {
 
       query: q,
@@ -3911,7 +3963,10 @@ router.get("/trending-brands", async (req, res) => {
     // FETCH PRODUCTS
     // =========================
 
-    const results =
+    // Product webhooks keep MongoDB current. Avoid a Shopify Admin API call on
+    // every cold trending request; it was the largest unpredictable latency source.
+    const results = [];
+    /* Legacy remote fallback retained for reference, intentionally disabled.
       await Promise.all(
 
         matchedStores.map(async storeDoc => {
@@ -4070,7 +4125,7 @@ router.get("/trending-brands", async (req, res) => {
 
         })
 
-      );
+      ); */
 
     // =========================
     // PRODUCTS — prefer local MongoDB (always up-to-date, covers all vendors)
@@ -5161,6 +5216,7 @@ router.clearTrendingCache = (shop) => {
 
 router.clearSearchCache = (shop) => {
   const s = _norm(shop);
+  delete vendorCache[s];
   delete filterConfigCache[s];
   delete typoCorpusCache[s];
   Object.keys(searchCache).forEach(k => {

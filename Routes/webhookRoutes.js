@@ -3,6 +3,7 @@ const router = express.Router();
 const Product = require("../Models/productModel");
 const Store = require("../Models/store");
 const searchRoute = require("./search");
+const { normalizeSearchText, normalizeTag } = require("../utils/searchRanking");
 const fetch = require("node-fetch");
 
 router.use((req, res, next) => {
@@ -280,11 +281,15 @@ ${product.tags || ""}
           vendor:
             product.vendor || "",
 
+          normalizedVendor: normalizeSearchText(product.vendor),
+
           productType:
             product.product_type || "",
 
           tags:
             webhookTags,
+
+          normalizedTags: webhookTags.map(normalizeTag).filter(Boolean),
 
           image:
             product.image?.src || "",
@@ -467,8 +472,10 @@ ${product.tags || ""}
         handle: product.handle || "",
         description: String(product.body_html || "").replace(/<[^>]*>/g, "").slice(0, 2000),
         vendor: product.vendor || "",
+        normalizedVendor: normalizeSearchText(product.vendor),
         productType: product.product_type || "",
         tags: webhookTags,
+        normalizedTags: webhookTags.map(normalizeTag).filter(Boolean),
         image: product.image?.src || "",
         price: Number(product.variants?.[0]?.price || 0),
         stock: webhookStock,

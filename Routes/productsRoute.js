@@ -5,6 +5,7 @@ const Product = require("../Models/productModel");
 const Store = require("../Models/store")
 const Collection = require("../Models/collectionModel");
 const searchRoute = require("./search");
+const { normalizeSearchText, normalizeTag } = require("../utils/searchRanking");
 
 // =========================
 // 🎨 COLOR EXTRACTION HELPER
@@ -386,7 +387,6 @@ query getProducts($cursor: String) {
   updatedAt
   publishedAt
   totalInventory
-  availableForSale
         featuredImage {
           url
         }
@@ -567,7 +567,6 @@ query getProducts($cursor: String) {
             ? Math.max(Number(p.totalInventory), 0)
             : variantInventory.reduce((total, item) => total + Math.max(Number(item.quantity || 0), 0), 0);
           const availableForSale =
-            p.availableForSale === true ||
             stock > 0 ||
             variantInventory.some(item => item.availableForSale || item.inventoryPolicy === "CONTINUE");
 
@@ -643,6 +642,8 @@ query getProducts($cursor: String) {
                   vendor:
                     p.vendor || "",
 
+                  normalizedVendor: normalizeSearchText(p.vendor),
+
                   productType:
                     p.productType || "",
 
@@ -650,6 +651,10 @@ query getProducts($cursor: String) {
                     Array.isArray(p.tags)
                       ? p.tags
                       : [],
+
+                  normalizedTags: (Array.isArray(p.tags) ? p.tags : [])
+                    .map(normalizeTag)
+                    .filter(Boolean),
 
                   image:
                     p.featuredImage?.url || "",

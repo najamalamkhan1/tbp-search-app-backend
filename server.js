@@ -85,10 +85,20 @@ db.once('connected', async () => {
       [{ store: 1, status: 1, collections: 1, firstPublishedAt: -1 }, { name: 'fast_collection_search' }],
       [{ store: 1, status: 1, productType: 1, firstPublishedAt: -1 }, { name: 'fast_product_type_search' }],
       [{ store: 1, status: 1, tags: 1, firstPublishedAt: -1 }, { name: 'fast_tag_search' }],
+      [{ store: 1, status: 1, normalizedTags: 1, firstPublishedAt: -1 }, { name: 'fast_normalized_tag_search' }],
+      [{ store: 1, status: 1, normalizedVendor: 1, firstPublishedAt: -1 }, { name: 'fast_normalized_vendor_search' }],
       [{ store: 1, status: 1, vendor: 1, firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 }, { name: 'fast_vendor_newest' }]
     ];
+    const sameIndexKeys = (left = {}, right = {}) => {
+      const leftEntries = Object.entries(left);
+      const rightEntries = Object.entries(right);
+      return leftEntries.length === rightEntries.length &&
+        leftEntries.every(([key, value], index) =>
+          rightEntries[index]?.[0] === key && rightEntries[index]?.[1] === value
+        );
+    };
     for (const [keys, options] of fastIndexes) {
-      if (!indexes.find(i => i.name === options.name)) {
+      if (!indexes.find(i => i.name === options.name || sameIndexKeys(i.key, keys))) {
         await col.createIndex(keys, options);
         console.log('[Migration] Created index:', options.name);
       }
