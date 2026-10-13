@@ -799,7 +799,7 @@ const vendorCache = {};
 const searchCache = {};
 const SEARCH_CACHE_TTL = 1000 * 60;
 const SEARCH_CACHE_MAX = 500;
-const SEARCH_RANKING_VERSION = "filters-fast-cache-v3";
+const SEARCH_RANKING_VERSION = "title-vendor-order-v4";
 const CACHE_TIME = 1000 * 60 * 2;
 
 // Trending routes cache — results change slowly, 3-min TTL is fine
