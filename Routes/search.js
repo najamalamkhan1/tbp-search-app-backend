@@ -2273,7 +2273,10 @@ collections searchableText tags colors sizes status
         const titleCandidates = await Product.find({
           store: cleanStore,
           status: "ACTIVE",
-          vendor: productQuery.vendor,
+          vendor: {
+            $regex: `^${escapeRegex(detectedVendor)}$`,
+            $options: "i"
+          },
           $and: titleTokenConditions
         })
           .limit(50)
