@@ -2266,18 +2266,16 @@ collections searchableText tags colors sizes status
     // Mongo text search is OR-based and recency-limited, so a multi-word title can
     // otherwise disappear behind newer products from the same vendor.
     if (detectedVendor && remainingTokens.length) {
-      const titleTokenConditions = remainingTokens
+      const orderedTitlePattern = remainingTokens
         .filter(token => token.length >= 2)
-        .map(token => ({ title: { $regex: escapeRegex(token), $options: "i" } }));
-      if (titleTokenConditions.length) {
+        .map(escapeRegex)
+        .join(".*");
+      if (orderedTitlePattern) {
         const titleCandidates = await Product.find({
           store: cleanStore,
           status: "ACTIVE",
-          vendor: {
-            $regex: `^${escapeRegex(detectedVendor)}$`,
-            $options: "i"
-          },
-          $and: titleTokenConditions
+          normalizedVendor: normalizeSearchText(detectedVendor),
+          title: { $regex: orderedTitlePattern, $options: "i" }
         })
           .limit(50)
           .lean()

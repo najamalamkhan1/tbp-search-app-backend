@@ -46,6 +46,7 @@ test("final response preserves relevance sorting after deduplication", () => {
 
 test("brand plus title searches fetch strict title candidates and skip collection injection", () => {
   const source = read("Routes/search.js");
-  assert.match(source, /if \(detectedVendor && remainingTokens\.length\) \{[\s\S]*?titleTokenConditions/);
+  assert.match(source, /if \(detectedVendor && remainingTokens\.length\) \{[\s\S]*?orderedTitlePattern/);
+  assert.match(source, /normalizedVendor: normalizeSearchText\(detectedVendor\)/);
   assert.match(source, /if \(detectedVendor && collections\.length && !remainingTokens\.length\)/);
 });
