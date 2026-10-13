@@ -1343,6 +1343,7 @@ router.get("/search", async (req, res) => {
       .map(c => String(c || "").toLowerCase().trim())
       .filter(Boolean))];
     const dbColorTerms = expandColorTermsForDb(hardColorTerms);
+    const allowTitleColorMatch = localColors.length > 0 && selectedColorTerms.length === 0;
     const aiColorTerms = (aiExpansion?.colors?.length ? aiExpansion.colors : (aiExpansion?.color ? [aiExpansion.color] : []))
       .map(c => String(c || "").toLowerCase().trim())
       .filter(Boolean);
@@ -2216,7 +2217,19 @@ router.get("/search", async (req, res) => {
     if (dbColorTerms.length) {
       const colorTerms = [...new Set(dbColorTerms.map(c => String(c || "").toLowerCase().trim()).filter(Boolean))];
       if (colorTerms.length) {
-        productQuery.colors = productQuery.colors || { $in: colorTerms };
+        if (allowTitleColorMatch) {
+          productQuery.$and = productQuery.$and || [];
+          productQuery.$and.push({
+            $or: [
+              { colors: { $in: colorTerms } },
+              ...colorTerms.map(color => ({
+                title: { $regex: `\\b${escapeRegex(color)}\\b`, $options: "i" }
+              }))
+            ]
+          });
+        } else {
+          productQuery.colors = productQuery.colors || { $in: colorTerms };
+        }
       }
     }
 
@@ -2448,6 +2461,11 @@ collections searchableText tags colors sizes status
       if (colorDataRatio >= 0.4) {
         const colorFiltered = products.filter(p => {
           const pColors = (p.colors || []).map(c => c.toLowerCase());
+          const title = String(p.title || "").toLowerCase();
+          const titleMatchesColor = allowTitleColorMatch && dbColorTerms.some(qc =>
+            new RegExp(`\\b${escapeRegex(String(qc || "").toLowerCase())}\\b`, "i").test(title)
+          );
+          if (titleMatchesColor) return true;
           if (!pColors.length) return false;
           return dbColorTerms.some(qc =>
             pColors.some(pc => pc === qc)
@@ -2460,6 +2478,10 @@ collections searchableText tags colors sizes status
     if (dbColorTerms.length) {
       const strictColorFiltered = products.filter(p => {
         const pColors = (p.colors || []).map(c => String(c || "").toLowerCase());
+        const title = String(p.title || "").toLowerCase();
+        if (allowTitleColorMatch && dbColorTerms.some(qc =>
+          new RegExp(`\\b${escapeRegex(String(qc || "").toLowerCase())}\\b`, "i").test(title)
+        )) return true;
         if (!pColors.length) return false;
         return dbColorTerms.some(qc => {
           const color = String(qc || "").toLowerCase();
