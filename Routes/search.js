@@ -3833,6 +3833,7 @@ ${p.productType || ""}
       query: q,
 
       meta: {
+        rankingVersion: SEARCH_RANKING_VERSION,
         originalQuery,
         finalQuery,
         synonymsApplied: synonymWords,
