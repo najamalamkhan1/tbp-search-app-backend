@@ -43,3 +43,9 @@ test("final response preserves relevance sorting after deduplication", () => {
   assert.doesNotMatch(source, /products = dedupeProducts\(products\);\s*products\.sort\(sortNewestFirst\);/);
   assert.match(source, /normalizedQuery && configuredSort === "newest"[\s\S]*?"relevance"/);
 });
+
+test("brand plus title searches fetch strict title candidates and skip collection injection", () => {
+  const source = read("Routes/search.js");
+  assert.match(source, /if \(detectedVendor && remainingTokens\.length\) \{[\s\S]*?titleTokenConditions/);
+  assert.match(source, /if \(detectedVendor && collections\.length && !remainingTokens\.length\)/);
+});

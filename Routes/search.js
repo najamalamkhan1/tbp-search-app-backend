@@ -2262,6 +2262,30 @@ collections searchableText tags colors sizes status
         .select(selectFields);
     }
 
+    // Brand + product-title searches need an explicit title candidate lookup.
+    // Mongo text search is OR-based and recency-limited, so a multi-word title can
+    // otherwise disappear behind newer products from the same vendor.
+    if (detectedVendor && remainingTokens.length) {
+      const titleTokenConditions = remainingTokens
+        .filter(token => token.length >= 2)
+        .map(token => ({ title: { $regex: escapeRegex(token), $options: "i" } }));
+      if (titleTokenConditions.length) {
+        const titleCandidates = await Product.find({
+          store: cleanStore,
+          status: "ACTIVE",
+          vendor: productQuery.vendor,
+          $and: titleTokenConditions
+        })
+          .limit(50)
+          .lean()
+          .select(selectFields);
+        const existingIds = new Set(products.map(product => String(product._id)));
+        titleCandidates.forEach(product => {
+          if (!existingIds.has(String(product._id))) products.push(product);
+        });
+      }
+    }
+
     searchDebug(
       "DB find ms:", Date.now() - __dbStart,
       "| pre-find ms:", __dbStart - __reqStart
@@ -3584,7 +3608,7 @@ collections searchableText tags colors sizes status
       return Number(b.productsCount || 0) - Number(a.productsCount || 0);
     });
 
-    if (detectedVendor && collections.length) {
+    if (detectedVendor && collections.length && !remainingTokens.length) {
       const latestVendorCollection = collections.find(c =>
         c.collectionId &&
         !isGarbageCollection(c.title) &&
