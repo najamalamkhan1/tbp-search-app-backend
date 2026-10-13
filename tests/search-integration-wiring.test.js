@@ -53,6 +53,7 @@ test("brand plus title searches fetch strict title candidates and skip collectio
 
 test("query colors can match product titles without weakening explicit color filters", () => {
   const source = read("Routes/search.js");
+  assert.match(source, /SEARCH_RANKING_VERSION = "title-color-parallel-v5"/);
   assert.match(source, /allowTitleColorMatch = localColors\.length > 0 && selectedColorTerms\.length === 0/);
   assert.match(source, /titleMatchesColor = allowTitleColorMatch/);
   assert.match(source, /if \(allowTitleColorMatch && dbColorTerms\.some/);
