@@ -2274,16 +2274,17 @@ collections searchableText tags colors sizes status
         const titleCandidates = await Product.find({
           store: cleanStore,
           status: "ACTIVE",
-          normalizedVendor: normalizeSearchText(detectedVendor),
           title: { $regex: orderedTitlePattern, $options: "i" }
         })
           .limit(50)
           .lean()
           .select(selectFields);
         const existingIds = new Set(products.map(product => String(product._id)));
-        titleCandidates.forEach(product => {
+        titleCandidates
+          .filter(product => normalizeSearchText(product.vendor) === normalizeSearchText(detectedVendor))
+          .forEach(product => {
           if (!existingIds.has(String(product._id))) products.push(product);
-        });
+          });
       }
     }
 
