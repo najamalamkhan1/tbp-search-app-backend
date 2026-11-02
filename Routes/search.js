@@ -799,7 +799,7 @@ const vendorCache = {};
 const searchCache = {};
 const SEARCH_CACHE_TTL = 1000 * 60;
 const SEARCH_CACHE_MAX = 500;
-const SEARCH_RANKING_VERSION = "title-color-parallel-v5";
+const SEARCH_RANKING_VERSION = "title-vendor-ambiguity-v6";
 const CACHE_TIME = 1000 * 60 * 2;
 
 // Trending routes cache — results change slowly, 3-min TTL is fine
@@ -1520,6 +1520,24 @@ router.get("/search", async (req, res) => {
     detectedVendor = resolveVendor(normalizedQuery, uniqueVendors, NON_VENDOR_KEYWORDS);
     if (!detectedVendor && vendorMatches.length && vendorMatches[0].score > 10000) {
       detectedVendor = vendorMatches[0].vendor;
+    }
+
+    // A single word can be both a product title and a prefix/substring of a brand
+    // (for example "maya" vs "Mayapret" / "Somaya"). In that ambiguous case,
+    // preserve product-title intent instead of locking the whole result set to a
+    // partially matched vendor. Exact vendor queries still keep vendor intent.
+    if (
+      detectedVendor &&
+      !normalizedQuery.includes(" ") &&
+      normalizeVendorName(detectedVendor) !== normalizeVendorName(normalizedQuery) &&
+      !requestedVendorFilter
+    ) {
+      const titleIntentExists = await Product.exists({
+        store: cleanStore,
+        status: "ACTIVE",
+        title: { $regex: `\\b${escapeRegex(normalizedQuery)}`, $options: "i" }
+      });
+      if (titleIntentExists) detectedVendor = null;
     }
 
     if (!detectedVendor && requestedVendorFilter && isFilterActive("vendor")) {
@@ -4825,8 +4843,8 @@ router.get("/suggestions", async (req, res) => {
 
     const normalizedQ = q.toLowerCase();
 
-    // Fire all three in parallel: AI + analytics + vendor matches
-    const [aiSuggestions, popularQueries, matchingVendors] = await Promise.all([
+    // Fetch AI, analytics, product-title and vendor suggestions in parallel.
+    const [aiSuggestions, popularQueries, matchingProducts, matchingVendors] = await Promise.all([
       // 1. AI completions (only if AI enabled)
       aiSettings.geminiEnabled !== false && process.env.GROQ_API_KEY
         ? getAiSuggestions(normalizedQ, modelName)
@@ -4847,7 +4865,18 @@ router.get("/suggestions", async (req, res) => {
         { $limit: 5 }
       ]),
 
-      // 3. Vendor (brand) names that contain the typed text
+      // 3. Product titles that contain a word beginning with the typed text.
+      Product.find({
+        store: shop,
+        status: "ACTIVE",
+        title: { $regex: `\\b${escapeRegex(normalizedQ)}`, $options: "i" }
+      })
+        .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1 })
+        .limit(5)
+        .select("title handle vendor image")
+        .lean(),
+
+      // 4. Vendor (brand) names that contain the typed text
       Product.distinct("vendor", {
         store: shop,
         status: "ACTIVE",
@@ -4858,20 +4887,28 @@ router.get("/suggestions", async (req, res) => {
     const seen = new Set();
     const results = [];
 
-    const push = (text, type) => {
+    const push = (text, type, metadata = {}) => {
       const t = (text || "").trim().toLowerCase();
       if (t.length < 2 || seen.has(t)) return;
       seen.add(t);
-      results.push({ text: t, type });
+      results.push({ text: t, type, ...metadata });
     };
 
     // Priority 1 — popular real queries (highest intent signal)
     popularQueries.forEach(pq => push(pq._id, "popular"));
 
-    // Priority 2 — vendor/brand name matches
+    // Priority 2 — real product title matches remain product suggestions.
+    (matchingProducts || []).forEach(product => push(product.title, "product", {
+      title: product.title,
+      handle: product.handle,
+      vendor: product.vendor,
+      image: product.image || ""
+    }));
+
+    // Priority 3 — vendor/brand matches stay in the designer section.
     (matchingVendors || []).slice(0, 3).forEach(v => push(v, "vendor"));
 
-    // Priority 3 — AI completions fill the rest
+    // Priority 4 — AI completions fill the rest
     aiSuggestions.forEach(s => push(s, "ai"));
 
     return res.json({ query: q, suggestions: results.slice(0, 8) });

@@ -53,8 +53,16 @@ test("brand plus title searches fetch strict title candidates and skip collectio
 
 test("query colors can match product titles without weakening explicit color filters", () => {
   const source = read("Routes/search.js");
-  assert.match(source, /SEARCH_RANKING_VERSION = "title-color-parallel-v5"/);
+  assert.match(source, /SEARCH_RANKING_VERSION = "title-vendor-ambiguity-v6"/);
   assert.match(source, /allowTitleColorMatch = localColors\.length > 0 && selectedColorTerms\.length === 0/);
   assert.match(source, /titleMatchesColor = allowTitleColorMatch/);
   assert.match(source, /if \(allowTitleColorMatch && dbColorTerms\.some/);
+});
+
+test("ambiguous single words prefer title intent while suggestions keep product and vendor types", () => {
+  const source = read("Routes/search.js");
+  assert.match(source, /const titleIntentExists = await Product\.exists/);
+  assert.match(source, /if \(titleIntentExists\) detectedVendor = null/);
+  assert.match(source, /matchingProducts[\s\S]*?push\(product\.title, "product"/);
+  assert.match(source, /matchingVendors[\s\S]*?push\(v, "vendor"/);
 });
