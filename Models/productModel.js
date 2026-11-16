@@ -8,8 +8,7 @@ const productSchema =
     // =========================
     store: {
       type: String,
-      required: true,
-      index: true
+      required: true
     },
 
     // =========================
@@ -417,6 +416,24 @@ productSchema.index({
   shopifyCreatedAt: -1
 }, {
   name: "fast_vendor_newest"
+});
+
+// Serves the default recency sort for {store, status} queries without an in-memory sort.
+productSchema.index({
+  store: 1,
+  status: 1,
+  firstPublishedAt: -1,
+  shopifyPublishedAt: -1,
+  publishedAt: -1,
+  shopifyCreatedAt: -1
+}, {
+  name: "store_status_newest"
+});
+
+// inventory_levels/update webhook looks products up by inventoryItemIds.
+productSchema.index({
+  store: 1,
+  inventoryItemIds: 1
 });
 
 // ========================================

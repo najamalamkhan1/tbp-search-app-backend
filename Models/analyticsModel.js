@@ -31,7 +31,6 @@ const analyticsSchema =
     normalizedQuery: {
       type: String,
       default: "",
-      index: true,
     },
 
     // ======================
@@ -41,7 +40,6 @@ const analyticsSchema =
     productId: {
       type: String,
       default: null,
-      index: true,
     },
 
     productTitle: {
@@ -66,7 +64,6 @@ const analyticsSchema =
     vendor: {
       type: String,
       default: null,
-      index: true,
     },
 
     // ======================
@@ -76,7 +73,6 @@ const analyticsSchema =
     store: {
       type: String,
       required: true,
-      index: true,
     },
 
     // ======================
@@ -114,12 +110,6 @@ const analyticsSchema =
 // ======================
 // INDEXES 🔥
 // ======================
-
-analyticsSchema.index({
-  store: 1,
-  type: 1,
-  createdAt: -1
-});
 
 analyticsSchema.index({
   vendor: 1,

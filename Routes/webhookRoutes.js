@@ -687,7 +687,7 @@ router.post(
       const products = await Product.find({
         store: shop,
         inventoryItemIds: { $in: ids }
-      }).select("_id variantsInventory").lean();
+      }).select("_id variantsInventory").lean().maxTimeMS(5000);
 
       for (const product of products) {
         const variantsInventory = (product.variantsInventory || []).map(item => {
