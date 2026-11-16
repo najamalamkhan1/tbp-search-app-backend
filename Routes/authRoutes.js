@@ -30,7 +30,7 @@ router.get("/callback", async (req, res) => {
         return res.status(400).send("Missing shop or code param");
     }
 
-    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    const baseUrl = `https://${req.get("host")}`;
 
     try {
         const response = await fetch(`https://${shop}/admin/oauth/access_token`, {
@@ -78,7 +78,7 @@ const registerWebhooks = async (shop, accessToken, baseUrl) => {
     ];
 
     for (const topic of topics) {
-        await fetch(`https://${shop}/admin/api/2026-04/webhooks.json`, {
+        const response = await fetch(`https://${shop}/admin/api/2026-04/webhooks.json`, {
             method: "POST",
             headers: {
                 "X-Shopify-Access-Token": accessToken,
@@ -92,7 +92,11 @@ const registerWebhooks = async (shop, accessToken, baseUrl) => {
                 },
             }),
         });
-        console.log("✅ Webhook registered:", topic);
+        if (response.ok) {
+            console.log("✅ Webhook registered:", topic);
+        } else {
+            console.error("❌ Webhook register failed:", topic, response.status, await response.text());
+        }
     }
 };
 

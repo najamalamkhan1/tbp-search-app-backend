@@ -640,6 +640,18 @@ async function recomputeProductStock(product) {
 }
 
 // =====================================
+// APP LIFECYCLE (ack only, so Shopify doesn't get 404)
+// =====================================
+router.post("/app/uninstalled", verifyShopifyWebhook, (req, res) => {
+  console.log("APP UNINSTALLED:", req.headers["x-shopify-shop-domain"]);
+  res.status(200).send("OK");
+});
+
+router.post("/app/scopes_update", verifyShopifyWebhook, (req, res) => {
+  res.status(200).send("OK");
+});
+
+// =====================================
 // LIVE INVENTORY UPDATE
 // =====================================
 router.post(
