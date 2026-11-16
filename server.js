@@ -45,14 +45,36 @@ app.use(cors({
 }));
 
 // MongoDB Connection
-mongoose.connect(
-  process.env.MONGO_DB_URI
-)
-// database connect
 const db = mongoose.connection;
 db.on('error', (error) => {
-  console.log("Error Occured", error);
+  console.error("MongoDB connection error:", error.message);
 });
+db.on('disconnected', () => {
+  console.warn('MongoDB disconnected');
+});
+
+const connectToMongo = async () => {
+  const mongoUri = process.env.MONGO_DB_URI;
+
+  if (!mongoUri) {
+    console.error('MONGO_DB_URI is not configured; retrying in 30 seconds');
+    setTimeout(connectToMongo, 30000);
+    return;
+  }
+
+  try {
+    await mongoose.connect(mongoUri, {
+      serverSelectionTimeoutMS: 10000,
+      connectTimeoutMS: 10000,
+    });
+  } catch (error) {
+    console.error(`MongoDB initial connection failed: ${error.message}`);
+    setTimeout(connectToMongo, 10000);
+  }
+};
+
+connectToMongo();
+
 db.once('connected', async () => {
   console.log('MongoDB connected');
   try {
