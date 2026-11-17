@@ -20,6 +20,8 @@ const {
   productIsAvailable,
   resolveVendor,
 } = require("../utils/searchRanking");
+// Shopify GraphQL fallback: only used when MongoDB returns nothing (see utils/shopifyFallback.js)
+const shopifyFallback = require("../utils/shopifyFallback");
 // =========================
 // AI EXPANSION (Groq Llama)
 // =========================
@@ -1128,7 +1130,7 @@ router.get("/search", async (req, res) => {
           }
         },
         { $limit: 50 }
-      ]);
+]).option({ maxTimeMS: 1000 });
 
       const queryText = q.toLowerCase();
       const formattedVendors = vendors
@@ -1159,8 +1161,9 @@ router.get("/search", async (req, res) => {
       })
         .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
         .skip(pageOffset)
-        .limit((pageLimit * 5) + 1)
-        .lean()
+        .limit(Math.min((pageLimit * 5) + 1, 60))
+.maxTimeMS(1000)
+.lean()
         .select(`
           productId title handle vendor image price stock availableForSale productType
           colors sizes tags collections status
@@ -1665,7 +1668,7 @@ router.get("/search", async (req, res) => {
         shopifyCreatedAt shopifyPublishedAt publishedAt firstPublishedAt
         collections tags colors sizes status
       `;
-      const fastFetchLimit = Math.min(pageOffset + pageLimit + 1, 240);
+      const fastFetchLimit = Math.min(pageOffset + pageLimit + 1, 96);
 
       const fastProductsRaw = await Product.find({
         store: cleanStore,
@@ -1674,7 +1677,8 @@ router.get("/search", async (req, res) => {
       })
         .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
         .limit(fastFetchLimit)
-        .lean()
+.maxTimeMS(1000)
+.lean()
         .select(fastSelectFields);
 
       const fastHasNextPage = fastProductsRaw.length > pageOffset + pageLimit;
@@ -1790,8 +1794,9 @@ router.get("/search", async (req, res) => {
           collections: { $in: latestCollectionIds }
         })
           .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
-          .limit(80)
-          .lean()
+          .limit(40)
+.maxTimeMS(1000)
+.lean()
           .select(fastSelectFields);
       }
 
@@ -2205,28 +2210,13 @@ router.get("/search", async (req, res) => {
 
         if (orConds.length) productQuery.$or = orConds;
       }
-    } else if (seasonalBroadQuery && coreDbTerms.length && !colorOnlySearch) {
-      const seasonalTerms = [...new Set([
-        ...coreDbTerms,
-        ...originalQuery.split(/\s+/),
-        ...expandCategoryToTags(originalQuery.split(/\s+/))
-      ]
-        .map(stripPriceNoise)
-        .map(t => String(t || "").toLowerCase().trim())
-        .filter(t => t.length >= 3 && !PRICE_NOISE.has(t))
-      )];
-      const orConds = buildOrConds(seasonalTerms);
-      if (orConds.length) productQuery.$or = orConds;
-    } else if (canUseTextSearch && coreDbTerms.length && !colorOnlySearch) {
-      productQuery.$text = { $search: coreDbTerms.slice(0, 4).join(" ") };
-    } else {
-      // Admin has custom field flags — per-field regex fallback (core terms only)
-      const orConds = colorOnlySearch ? [] : buildOrConds(coreDbTerms);
-      if (orConds.length) {
-        productQuery.$and = productQuery.$and || [];
-        productQuery.$and.push({ $or: orConds });
-      }
-    }
+    } else if (coreDbTerms.length && !colorOnlySearch) {
+  productQuery.$text = {
+    $search: coreDbTerms.slice(0, 4).join(" ")
+  };
+} else {
+  // No unrestricted regex fallback
+}
 
     // =========================
     // 🔥 SEARCH PRODUCTS
@@ -2270,54 +2260,57 @@ collections searchableText tags colors sizes status
     `;
 
     let products;
-    try {
-      products = await Product.find(productQuery)
-        .sort(productQuery.$text
-          ? { firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 }
-          : { firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
-        .limit(productFetchLimit)
-        .maxTimeMS(15000)
-        .lean()
-        .select(selectFields);
-    } catch (dbErr) {
-      // Text index not ready (being built) — fall back to regex search
-      console.warn("[Search] $text failed, falling back to regex:", dbErr.message);
-      const fallbackQuery = { store: cleanStore, status: "ACTIVE", ...userNarrowingQuery };
-      if (detectedVendor) fallbackQuery.vendor = productQuery.vendor;
-      const regexOrConds = buildOrConds(coreDbTerms.slice(0, 3));
-      if (regexOrConds.length) fallbackQuery.$or = regexOrConds;
-      products = await Product.find(fallbackQuery)
-        .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
-        .limit(productFetchLimit)
-        .lean()
-        .select(selectFields);
-    }
+
+try {
+  products = await Product.find(productQuery)
+    .sort({
+      firstPublishedAt: -1,
+      shopifyPublishedAt: -1,
+      publishedAt: -1,
+      shopifyCreatedAt: -1
+    })
+    .limit(Math.min(productFetchLimit, 48))
+    .maxTimeMS(1000)
+    .lean()
+    .select(selectFields);
+
+} catch (dbErr) {
+  console.error("[Search] Query failed:", dbErr.message);
+
+  return res.status(503).json({
+    error: "Search temporarily unavailable",
+    products: [],
+    vendors: [],
+    collections: [],
+    suggestions: []
+  });
+}
 
     // Brand + product-title searches need an explicit title candidate lookup.
     // Mongo text search is OR-based and recency-limited, so a multi-word title can
     // otherwise disappear behind newer products from the same vendor.
-    if (detectedVendor && remainingTokens.length) {
-      const orderedTitlePattern = remainingTokens
-        .filter(token => token.length >= 2)
-        .map(escapeRegex)
-        .join(".*");
-      if (orderedTitlePattern) {
-        const titleCandidates = await Product.find({
-          store: cleanStore,
-          status: "ACTIVE",
-          title: { $regex: orderedTitlePattern, $options: "i" }
-        })
-          .limit(50)
-          .lean()
-          .select(selectFields);
-        const existingIds = new Set(products.map(product => String(product._id)));
-        titleCandidates
-          .filter(product => normalizeSearchText(product.vendor) === normalizeSearchText(detectedVendor))
-          .forEach(product => {
-          if (!existingIds.has(String(product._id))) products.push(product);
-          });
-      }
-    }
+    // if (detectedVendor && remainingTokens.length) {
+    //   const orderedTitlePattern = remainingTokens
+    //     .filter(token => token.length >= 2)
+    //     .map(escapeRegex)
+    //     .join(".*");
+    //   if (orderedTitlePattern) {
+    //     const titleCandidates = await Product.find({
+    //       store: cleanStore,
+    //       status: "ACTIVE",
+    //       title: { $regex: orderedTitlePattern, $options: "i" }
+    //     })
+    //       .limit(50)
+    //       .lean()
+    //       .select(selectFields);
+    //     const existingIds = new Set(products.map(product => String(product._id)));
+    //     titleCandidates
+    //       .filter(product => normalizeSearchText(product.vendor) === normalizeSearchText(detectedVendor))
+    //       .forEach(product => {
+    //       if (!existingIds.has(String(product._id))) products.push(product);
+    //       });
+    //   }
+    // }
 
     searchDebug(
       "DB find ms:", Date.now() - __dbStart,
@@ -2394,6 +2387,7 @@ collections searchableText tags colors sizes status
         })
           .sort({ firstPublishedAt: -1, shopifyPublishedAt: -1, publishedAt: -1, shopifyCreatedAt: -1 })
           .limit(120)
+          .maxTimeMS(1000)
           .lean()
           // description excluded — it can be thousands of words (caused 57s hang).
           // tags included — they're short words (e.g. "embroidery") that enable typo matching.
@@ -2640,12 +2634,14 @@ collections searchableText tags colors sizes status
         activeProductCollectionIds.length
           ? Collection.find({ store: cleanStore, collectionId: { $in: activeProductCollectionIds } })
             .sort({ shopifyPublishedAt: -1, firstPublishedAt: -1, shopifyCreatedAt: -1 })
-            .limit(80)
-            .lean()
+            .limit(40)
+.maxTimeMS(1000)
+.lean()
           : Promise.resolve([]),
         Collection.find({ store: cleanStore, $text: { $search: detectedVendor } })
           .sort({ shopifyPublishedAt: -1, firstPublishedAt: -1, shopifyCreatedAt: -1 })
           .limit(20)
+          .maxTimeMS(1000)
           .lean()
       ]).then(([activeCollections, textCollections]) => {
         const byId = new Map();
@@ -2663,8 +2659,9 @@ collections searchableText tags colors sizes status
       : rawCollectionIds.length
         ? Collection.find({ store: cleanStore, collectionId: { $in: rawCollectionIds } })
           .sort({ shopifyPublishedAt: -1, firstPublishedAt: -1, shopifyCreatedAt: -1 })
-          .limit(50)
-          .lean()
+          .limit(30)
+.maxTimeMS(1000)
+.lean()
         : Promise.resolve([]);
 
     // Pure vendor search: entire query matched a vendor, no remaining keyword.
@@ -3868,11 +3865,63 @@ ${p.productType || ""}
       products.sort(defaultSort === "relevance" && !isPureVendorSearch ? sortByRelevance : sortNewestFirst);
     }
 
+    // =========================
+    // 🛟 SHOPIFY GRAPHQL FALLBACK
+    // Only when MongoDB produced 0 products. Colour/size/collection filters cannot be
+    // expressed reliably in Shopify's query syntax, so those requests stay empty
+    // instead of returning products that ignore the user's filter.
+    // =========================
+    let fallbackResult = null;
+    if (products.length === 0) {
+      const fbVendors = normalizeParamList(requestedVendorFilter);
+      const fbAvailability = normalizeParamList(requestedAvailabilityFilter);
+      const fbProductTypes = normalizeParamList(requestedProductTypeFilter);
+      const fbAvailabilitySupported = fbAvailability.every(v => /^(in[\s_-]?stock|available|true|1)$/i.test(v));
+      const fbUnsupported =
+        Boolean(requestedColorFilter || requestedSizeFilter || requestedCollectionFilter) ||
+        fbVendors.length > 1 ||
+        fbProductTypes.length > 1 ||
+        !fbAvailabilitySupported;
+
+      if (!fbUnsupported && (q || fbVendors.length)) {
+        try {
+          fallbackResult = await shopifyFallback.searchFallback({
+            shop: cleanStore,
+            query: q,
+            phrases: [
+              aiExpansion?.corrected,
+              aiExpansion?.searchPhrase,
+              ...allSearchTerms
+            ].filter(Boolean).slice(0, 5),
+            ignoredWords: NON_VENDOR_KEYWORDS,
+            filters: {
+              vendor: fbVendors[0] || null,
+              productType: fbProductTypes[0] || null,
+              tags: normalizeParamList(requestedTagFilter),
+              minPrice: requestedMinPrice ?? effectiveMinPrice,
+              maxPrice: requestedMaxPrice ?? effectiveMaxPrice,
+              inStockOnly: hideOutOfStock || fbAvailability.length > 0
+            }
+          });
+        } catch (fallbackErr) {
+          console.warn("[FALLBACK] search failed:", fallbackErr.message);
+        }
+      }
+      if (fallbackResult?.products?.length) {
+        products = fallbackResult.products;
+      }
+    }
+    const fallbackActive = Boolean(fallbackResult?.products?.length);
+
     const payload = {
 
       query: q,
 
       meta: {
+        ...(fallbackActive && {
+          fallback: "shopify",
+          fallbackDetectedVendor: fallbackResult.detectedVendor
+        }),
         rankingVersion: SEARCH_RANKING_VERSION,
         originalQuery,
         finalQuery,
@@ -3930,9 +3979,13 @@ ${p.productType || ""}
         availableCategories
       },
       vendors:
-        vendorResults,
+        fallbackActive && !vendorResults.length
+          ? fallbackResult.vendors
+          : vendorResults,
       collections:
-        formattedCollections,
+        fallbackActive && !formattedCollections.length
+          ? fallbackResult.collections
+          : formattedCollections,
       products:
         products
           .slice(0, 500),
@@ -3949,7 +4002,11 @@ ${p.productType || ""}
         }
       }
     }
-    searchCache[cacheKey] = { data: payload, timestamp: Date.now() };
+    // Fallback payloads are not stored in the main cache so Mongo results return as soon as it recovers
+    // (the fallback module keeps its own 60s cache).
+    if (!fallbackActive) {
+      searchCache[cacheKey] = { data: payload, timestamp: Date.now() };
+    }
 
     searchDebug("TOTAL handler ms:", Date.now() - __reqStart);
 
@@ -4249,6 +4306,31 @@ router.get("/trending-brands", async (req, res) => {
       firstPublishedAt: p.firstPublishedAt || null,
     }));
 
+    // FALLBACK: MongoDB had no live products -> pull latest live products from Shopify GraphQL.
+    // Bounded (2s timeout, circuit breaker, 60s cache) and only runs on an empty Mongo result.
+    let tbFallbackUsed = false;
+    if (!localProductsMapped.length) {
+      const fallbackProducts = await shopifyFallback.fetchLatestProducts(cleanStore, 100);
+      if (fallbackProducts.length) {
+        tbFallbackUsed = true;
+        results.push(fallbackProducts.map(p => ({
+          id: p.productId,
+          title: p.title,
+          handle: p.handle,
+          vendor: p.vendor,
+          status: "ACTIVE",
+          publishedAt: p.publishedAt,
+          createdAt: p.shopifyCreatedAt,
+          image: p.image,
+          price: p.price,
+          shopifyCreatedAt: p.shopifyCreatedAt,
+          firstPublishedAt: p.firstPublishedAt,
+          stock: p.stock,
+          availableForSale: p.availableForSale,
+        })));
+      }
+    }
+
     // Shopify API results (may be empty if API failed or token expired)
     const apiProducts = results
       .flat()
@@ -4465,7 +4547,7 @@ router.get("/trending-brands", async (req, res) => {
     // RESPONSE
     // =========================
 
-    const tbPayload = { brands, products: trendingProducts };
+    const tbPayload = { brands, products: trendingProducts, ...(tbFallbackUsed && { fallback: "shopify" }) };
     trendingCache[tbCacheKey] = { data: tbPayload, timestamp: Date.now() };
     res.json(tbPayload);
 
@@ -4531,7 +4613,7 @@ router.get("/trending", async (req, res) => {
     // =========================
     // PARALLEL: analytics + products (independent)
     // =========================
-    const [analyticsData, dbProducts] = await Promise.all([
+    const [analyticsData, mongoTrendingProducts] = await Promise.all([
       Analytics.aggregate([
         {
           $match: {
@@ -4560,6 +4642,15 @@ router.get("/trending", async (req, res) => {
           "firstPublishedAt shopifyCreatedAt shopifyPublishedAt publishedAt status"
         )
     ]);
+
+    // FALLBACK: no live products in MongoDB -> latest live products from Shopify GraphQL.
+    let dbProducts = mongoTrendingProducts;
+    let trendingFallbackUsed = false;
+    if (!dbProducts.length) {
+      const fallbackProducts = await shopifyFallback.fetchLatestProducts(cleanStore, 100);
+      dbProducts = fallbackProducts.filter(p => !excludedProductIds.has(String(p.productId)));
+      trendingFallbackUsed = dbProducts.length > 0;
+    }
 
     const analyticsMap = {};
     analyticsData.forEach(item => {
@@ -4639,6 +4730,7 @@ router.get("/trending", async (req, res) => {
 
     const trendingProducts = [...pinned, ...dynamic].slice(0, maxProducts);
 
+    if (trendingFallbackUsed) res.set("X-Search-Fallback", "shopify");
     trendingCache[tCacheKey] = { data: trendingProducts, timestamp: Date.now() };
     res.json(trendingProducts);
 
